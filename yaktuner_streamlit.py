@@ -38,6 +38,10 @@ st.title("☁️ YAKtuner Online")
 
 # --- 1. Sidebar for Settings ---
 with st.sidebar:
+    # --- FIX: Add the application logo ---
+    st.image("yaktune-website-favicon-black.png", use_column_width='auto')
+    # --- END FIX ---
+
     st.header("⚙️ Tuner Settings")
 
     # --- Module Selection ---
@@ -81,9 +85,7 @@ with st.sidebar:
                             help="Set the maximum amount of timing advance to add back per knock event. A lower value is safer.")
 
     st.divider()
-    st.page_link("pages/2_PID_Downloads.py", label="PID Lists for Download", icon="📄")
-
-    st.divider()
+    # --- FIX: Removed the page link to the PID downloads page ---
 
     # --- Donation Link ---
     paypal_link = "https://www.paypal.com/donate/?hosted_button_id=MN43RKBR8AT6L"
@@ -473,7 +475,6 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                             with st.status("Running Fuel Factor (MFF) analysis...",
                                            expanded=True) as module_status:
                                 try:
-                                    # --- FIX: Simplified map loading for single MFF table ---
                                     keys = ['MFFtable_X', 'MFFtable_Y', 'MFFtable']
                                     module_maps = {key: all_maps.get(key) for key in keys}
                                     missing = [key for key, val in module_maps.items() if val is None]
@@ -481,7 +482,6 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                                         f"A required map for MFF tuning is missing: {', '.join(missing)}")
                                     all_maps_data['mff'] = module_maps
 
-                                    # --- FIX: Simplified call to MFF analysis function ---
                                     mff_results = cached_run_mff_analysis(
                                         log=log_for_mff,
                                         mffxaxis=module_maps['MFFtable_X'],
@@ -489,7 +489,6 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                                         mfftable=module_maps['MFFtable'],
                                         logvars=mapped_log_df.columns.tolist()
                                     )
-                                    # --- END FIX ---
 
                                     if mff_results['status'] == 'Success':
                                         module_status.update(label="Fuel Factor (MFF) analysis complete.",
@@ -561,7 +560,8 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                         exh_labels = [str(x) for x in module_maps[x_axis_key]]
                         int_labels = [str(y) for y in module_maps[y_axis_key]]
 
-                        original_wg_df = pd.DataFrame(module_maps[main_table_key], index=int_labels, columns=exh_labels)
+                        original_wg_df = pd.DataFrame(module_maps[main_table_key], index=int_labels,
+                                                      columns=exh_labels)
                         styled_wg_table = style_changed_cells(recommended_wg_df, original_wg_df)
 
                         tab1, tab2 = st.tabs(["📈 Recommended Table", "📊 Scatter Plot"])
@@ -579,7 +579,6 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                         if mff_results['warnings']:
                             for warning in mff_results['warnings']: st.warning(f"MFF Analysis Warning: {warning}")
 
-                        # --- FIX: Simplified results display for single MFF table ---
                         recommended_mff_df = mff_results['results_mff']
                         module_maps = all_maps_data['mff']
 
@@ -589,8 +588,8 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                             columns=[str(x) for x in module_maps['MFFtable_X']]
                         )
                         styled_table = style_changed_cells(recommended_mff_df, original_df)
-                        display_table_with_copy_button(f"#### Recommended MFF Table", styled_table, recommended_mff_df)
-                        # --- END FIX ---
+                        display_table_with_copy_button(f"#### Recommended MFF Table", styled_table,
+                                                       recommended_mff_df)
 
                 if knk_results and knk_results.get('status') == 'Success':
                     with st.expander("Ignition Timing (KNK) Tuning Results", expanded=True):
@@ -598,7 +597,8 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                             for warning in knk_results['warnings']:
                                 st.warning(f"KNK Analysis Warning: {warning}")
 
-                        recommended_knk_df, scatter_plot = knk_results['results_knk'], knk_results['scatter_plot_fig']
+                        recommended_knk_df, scatter_plot = knk_results['results_knk'], knk_results[
+                            'scatter_plot_fig']
                         module_maps = all_maps_data['knk']
                         tab1, tab2 = st.tabs(["📈 Recommended Correction Table", "📊 Knock Scatter Plot"])
 
