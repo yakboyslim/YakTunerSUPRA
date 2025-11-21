@@ -109,9 +109,10 @@ def _calculate_mff_correction(log_data, blend_surface, old_table, mffxaxis, mffy
     return recommended_table
 
 # --- Main Orchestrator Function ---
-def run_mff_analysis(log, mffxaxis, mffyaxis, mfftable, logvars):
+def run_mff_analysis(firmware_id, log, mffxaxis, mffyaxis, mfftable, logvars):
     """
     Main orchestrator for the MFF tuning process. A pure computational function.
+    The firmware_id is used for cache invalidation and is not used in the function body.
     """
     print(" -> Initializing MFF analysis...")
     params = {'confidence': 0.7}

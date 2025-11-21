@@ -174,9 +174,10 @@ def _calculate_final_recommendations(log_data, blend, old_table, wgxaxis, wgyaxi
 
 
 # --- Main Orchestrator Function ---
-def run_wg_analysis(log_df, wgxaxis, wgyaxis, oldWG, logvars, WGlogic, show_scatter_plot=True):
+def run_wg_analysis(firmware_id, log_df, wgxaxis, wgyaxis, oldWG, logvars, WGlogic, show_scatter_plot=True):
     """
     Main orchestrator for the WG tuning process. A pure computational function.
+    The firmware_id is used for cache invalidation and is not used in the function body.
     """
     print(" -> Initializing WG analysis...")
     # The 'fudge' factor is a gain on the boost error. A value of 2.5 is quite aggressive.

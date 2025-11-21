@@ -21,7 +21,7 @@ matplotlib.use('Agg')
 
 def _prepare_knock_data(log):
     """Creates derived columns and identifies knock events in the log data."""
-    # --- FIX: Analyze 6 cylinders for knock ---
+    # Analyze 6 cylinders for knock
     knock_cols = [f'KNK{i}' for i in range(1, 7)]
     all_cyl_knock = log[knock_cols].to_numpy()
     log['KNKAVG'] = np.mean(all_cyl_knock, axis=1)
@@ -39,11 +39,11 @@ def _prepare_knock_data(log):
         outlier_cyl_indices = np.argmax(outlier_scores[rows_with_outlier], axis=1)
         log.loc[rows_with_outlier, 'singlecyl'] = outlier_cyl_indices + 1
 
-    # --- Vectorized knock event detection ---
+    # Vectorized knock event detection
     knock_decreased = log[knock_cols].diff() < 0
     log['knkoccurred'] = knock_decreased.any(axis=1)
 
-    # --- Identify source of knock for plotting ---
+    # Identify source of knock for plotting
     knock_events_mask = log['knkoccurred']
     num_knocking_cyls = knock_decreased[knock_events_mask].sum(axis=1)
     single_knock_cyl_idx = np.argmax(knock_decreased[knock_events_mask].to_numpy(), axis=1)
@@ -62,7 +62,6 @@ def _create_bins(log, igxaxis, igyaxis):
     yedges = [0] + [(igyaxis[i] + igyaxis[i + 1]) / 2 for i in range(len(igyaxis) - 1)] + [float('inf')]
 
     log['X'] = pd.cut(log['RPM'], bins=xedges, labels=False)
-    # --- FIX: Use LOAD for the Y-axis binning ---
     log['Y'] = pd.cut(log['LOAD'], bins=yedges, labels=False)
     return log
 
@@ -92,7 +91,6 @@ def _calculate_knock_correction(log, igxaxis, igyaxis, params):
                     )
                     if high_ci < 0:
                         correction_map[j, i] = (high_ci + mean_knock_retard_during_events) / 2
-                # --- FIX: Use LOAD for y-axis condition ---
                 elif knock_events.empty and igxaxis[i] > 2500 and igyaxis[j] > 70:
                     confidence_weight = min(count, max_count_for_full_advance) / max_count_for_full_advance
                     advance_amount = params['max_adv'] * confidence_weight
@@ -114,7 +112,6 @@ def create_knock_scatter_plot(log, igxaxis, igyaxis):
         return None
 
     fig, ax = plt.subplots(figsize=(12, 8))
-    # --- FIX: Extend colors and labels for 6 cylinders ---
     colors = ['grey', 'red', 'blue', 'green', 'purple', 'orange', 'cyan']
     cmap = ListedColormap(colors)
     bounds = [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5]
@@ -134,7 +131,6 @@ def create_knock_scatter_plot(log, igxaxis, igyaxis):
 
     ax.invert_yaxis()
     ax.set_xlabel('RPM')
-    # --- FIX: Update Y-axis label to Load ---
     ax.set_ylabel('Load (%)')
     ax.set_title('Knock Events by Cylinder and Magnitude')
     ax.grid(True)
@@ -146,17 +142,10 @@ def create_knock_scatter_plot(log, igxaxis, igyaxis):
 
 
 # --- Main Orchestrator Function ---
-def run_knk_analysis(log, igxaxis, igyaxis, max_adv):
+def run_knk_analysis(firmware_id, log, igxaxis, igyaxis, max_adv):
     """
     Main orchestrator for the KNK tuning process. A pure computational function.
-
-    Args:
-        log (pd.DataFrame): The mapped log data.
-        igxaxis, igyaxis (np.ndarray): The axes for the ignition tables.
-        max_adv (float): The maximum advance to apply, from user settings.
-
-    Returns:
-        dict: A dictionary containing all results.
+    The firmware_id is used for cache invalidation and is not used in the function body.
     """
     print(" -> Initializing KNK analysis...")
     params = {'max_adv': max_adv, 'confidence': 0.7}
