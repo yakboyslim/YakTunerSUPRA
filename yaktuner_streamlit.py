@@ -317,7 +317,7 @@ def cached_run_knk_analysis(*args, **kwargs):
 
 # --- 1. Sidebar ---
 with st.sidebar:
-    st.image("yaktune-website-favicon-black.png", use_column_width='auto')
+    st.image("yaktune-website-favicon-black.png", use_container_width='auto')
     st.header("⚙️ Tuner Settings")
 
     # --- Module Selection ---
@@ -375,27 +375,47 @@ uploaded_log_files = st.file_uploader("Upload .csv log files", type=['csv'], acc
 if 'firmware_id' not in st.session_state:
     st.session_state.firmware_id = None
 
-detected_fw = None
-if uploaded_log_files:
-    # Only need to check the first log file
-    detected_fw = get_firmware_from_log(uploaded_log_files[0])
+# --- FIX: Restructured firmware logic to prioritize manual selection ---
+# First, determine if manual selection is active
+manual_selection_active = st.sidebar.checkbox("Manually Select Firmware", key="manual_fw_selection")
 
-with firmware_placeholder.container():
+# Then, perform detection if needed
+detected_fw = None
+if uploaded_log_files and not manual_selection_active:
+    detected_fw = get_firmware_from_log(uploaded_log_files[0])
     if detected_fw:
-        st.info(f"**Detected Firmware:**\n`{detected_fw}`")
         st.session_state.firmware_id = detected_fw
+
+# Finally, build the UI based on the state
+with firmware_placeholder.container():
+    if manual_selection_active:
+        with st.spinner("Fetching available firmwares..."):
+            available_firmwares = get_available_firmwares_from_github()
+        if available_firmwares:
+            try:
+                # Default the selectbox to the currently active firmware
+                current_index = available_firmwares.index(st.session_state.firmware_id)
+            except (ValueError, TypeError):
+                current_index = 0  # Default to the first item if not found
+
+            selected_fw = st.selectbox(
+                "Select Firmware",
+                options=available_firmwares,
+                index=current_index
+            )
+            # The selectbox is now the source of truth
+            st.session_state.firmware_id = selected_fw
+        else:
+            st.warning("Could not fetch firmware list. Manual selection unavailable.")
+
+    # Display the final, active firmware ID
+    active_fw = st.session_state.get('firmware_id')
+    if active_fw:
+        st.info(f"**Active Firmware:**\n`{active_fw}`")
     else:
         st.info("**Firmware:**\n`Upload log to detect`")
+# --- END FIX ---
 
-    if uploaded_log_files:
-        if st.checkbox("Manually Select Firmware", key="manual_fw_selection"):
-            with st.spinner("Fetching available firmwares..."):
-                available_firmwares = get_available_firmwares_from_github()
-            if available_firmwares:
-                selected_fw = st.selectbox("Select Firmware", options=available_firmwares)
-                st.session_state.firmware_id = selected_fw
-            else:
-                st.warning("Could not fetch firmware list. Manual selection unavailable.")
 
 # --- 3. Run Button and Analysis Logic ---
 st.divider()
@@ -434,7 +454,8 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
 
         # --- Phase 1: Interactive Variable Mapping ---
         log_df = pd.concat(
-            (pd.read_csv(f, encoding='latin1', skiprows=LOG_METADATA_ROWS_TO_SKIP).iloc[:, :-1] for f in uploaded_log_files),
+            (pd.read_csv(f, encoding='latin1', skiprows=LOG_METADATA_ROWS_TO_SKIP).iloc[:, :-1] for f in
+             uploaded_log_files),
             ignore_index=True
         )
 
@@ -454,7 +475,8 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                     with st.expander("View Variable Mapping Results"):
                         varconv_array = st.session_state.updated_varconv_df.to_numpy()
                         mapping_summary_df = pd.DataFrame({
-                            "Required Variable": varconv_array[2, 1:] if varconv_array.shape[0] > 2 else varconv_array[1, 1:],
+                            "Required Variable": varconv_array[2, 1:] if varconv_array.shape[0] > 2 else varconv_array[
+                                                                                                         1, 1:],
                             "Matched Log Column": varconv_array[0, 1:],
                             "Internal App Name": varconv_array[1, 1:]
                         })
@@ -473,21 +495,28 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                     if run_wg:
                         with st.status("Running Wastegate (WG) analysis...", expanded=True) as module_status:
                             try:
-                                x_axis_key, y_axis_key, main_table_key = ('wgdc_cust_X', 'wgdc_cust_Y', 'wgdc_cust') if use_swg_logic else ('wgdc_X', 'wgdc_Y', 'wgdc')
+                                x_axis_key, y_axis_key, main_table_key = (
+                                'wgdc_cust_X', 'wgdc_cust_Y', 'wgdc_cust') if use_swg_logic else (
+                                'wgdc_X', 'wgdc_Y', 'wgdc')
                                 essential_keys = [x_axis_key, y_axis_key, main_table_key]
                                 module_maps = {key: all_maps.get(key) for key in essential_keys}
                                 if any(v is None for v in module_maps.values()):
-                                    raise KeyError(f"A required map for WG tuning is missing: {[k for k, v in module_maps.items() if v is None]}")
+                                    raise KeyError(
+                                        f"A required map for WG tuning is missing: {[k for k, v in module_maps.items() if v is None]}")
                                 all_maps_data['wg'] = module_maps
 
                                 wg_results = cached_run_wg_analysis(
-                                    log_df=mapped_log_df, wgxaxis=module_maps[x_axis_key], wgyaxis=module_maps[y_axis_key],
-                                    oldWG=module_maps[main_table_key], logvars=mapped_log_df.columns.tolist(), WGlogic=use_swg_logic
+                                    log_df=mapped_log_df, wgxaxis=module_maps[x_axis_key],
+                                    wgyaxis=module_maps[y_axis_key],
+                                    oldWG=module_maps[main_table_key], logvars=mapped_log_df.columns.tolist(),
+                                    WGlogic=use_swg_logic
                                 )
-                                module_status.update(label="Wastegate (WG) analysis complete.", state="complete", expanded=False)
+                                module_status.update(label="Wastegate (WG) analysis complete.", state="complete",
+                                                     expanded=False)
                             except Exception as e:
                                 st.error(f"An unexpected error occurred during WG tuning: {e}")
-                                module_status.update(label="Wastegate (WG) analysis failed.", state="error", expanded=True)
+                                module_status.update(label="Wastegate (WG) analysis failed.", state="error",
+                                                     expanded=True)
 
                     if run_mff:
                         with st.status("Running Fuel Factor (MFF) analysis...", expanded=True) as module_status:
@@ -495,17 +524,21 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                                 keys = ['MFFtable_X', 'MFFtable_Y', 'MFFtable']
                                 module_maps = {key: all_maps.get(key) for key in keys}
                                 if any(v is None for v in module_maps.values()):
-                                    raise KeyError(f"A required map for MFF tuning is missing: {[k for k, v in module_maps.items() if v is None]}")
+                                    raise KeyError(
+                                        f"A required map for MFF tuning is missing: {[k for k, v in module_maps.items() if v is None]}")
                                 all_maps_data['mff'] = module_maps
 
                                 mff_results = cached_run_mff_analysis(
-                                    log=log_for_mff, mffxaxis=module_maps['MFFtable_X'], mffyaxis=module_maps['MFFtable_Y'],
+                                    log=log_for_mff, mffxaxis=module_maps['MFFtable_X'],
+                                    mffyaxis=module_maps['MFFtable_Y'],
                                     mfftable=module_maps['MFFtable'], logvars=mapped_log_df.columns.tolist()
                                 )
-                                module_status.update(label="Fuel Factor (MFF) analysis complete.", state="complete", expanded=False)
+                                module_status.update(label="Fuel Factor (MFF) analysis complete.", state="complete",
+                                                     expanded=False)
                             except Exception as e:
                                 st.error(f"An unexpected error occurred during MFF tuning: {e}")
-                                module_status.update(label="Fuel Factor (MFF) analysis failed.", state="error", expanded=True)
+                                module_status.update(label="Fuel Factor (MFF) analysis failed.", state="error",
+                                                     expanded=True)
 
                     if run_ign:
                         with st.status("Running Ignition (KNK) analysis...", expanded=True) as module_status:
@@ -513,16 +546,20 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                                 keys = ['igxaxis', 'igyaxis']
                                 module_maps = {key: all_maps.get(key) for key in keys}
                                 if any(v is None for v in module_maps.values()):
-                                    raise KeyError(f"A required map for KNK tuning is missing: {[k for k, v in module_maps.items() if v is None]}")
+                                    raise KeyError(
+                                        f"A required map for KNK tuning is missing: {[k for k, v in module_maps.items() if v is None]}")
                                 all_maps_data['knk'] = module_maps
 
                                 knk_results = cached_run_knk_analysis(
-                                    log=mapped_log_df, igxaxis=module_maps['igxaxis'], igyaxis=module_maps['igyaxis'], max_adv=max_adv
+                                    log=mapped_log_df, igxaxis=module_maps['igxaxis'], igyaxis=module_maps['igyaxis'],
+                                    max_adv=max_adv
                                 )
-                                module_status.update(label="Ignition (KNK) analysis complete.", state="complete", expanded=False)
+                                module_status.update(label="Ignition (KNK) analysis complete.", state="complete",
+                                                     expanded=False)
                             except Exception as e:
                                 st.error(f"An unexpected error occurred during KNK tuning: {e}")
-                                module_status.update(label="Ignition (KNK) analysis failed.", state="error", expanded=True)
+                                module_status.update(label="Ignition (KNK) analysis failed.", state="error",
+                                                     expanded=True)
 
                 status.update(label="Analysis complete!", state="complete", expanded=False)
                 st.balloons()
@@ -536,17 +573,21 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                         for warning in wg_results['warnings']: st.warning(f"WG Analysis Warning: {warning}")
                     recommended_wg_df, scatter_plot = wg_results['results_wg'], wg_results['scatter_plot_fig']
                     module_maps = all_maps_data['wg']
-                    x_axis_key, y_axis_key, main_table_key = ('wgdc_cust_X', 'wgdc_cust_Y', 'wgdc_cust') if use_swg_logic else ('wgdc_X', 'wgdc_Y', 'wgdc')
+                    x_axis_key, y_axis_key, main_table_key = (
+                    'wgdc_cust_X', 'wgdc_cust_Y', 'wgdc_cust') if use_swg_logic else ('wgdc_X', 'wgdc_Y', 'wgdc')
                     exh_labels = [str(x) for x in module_maps[x_axis_key]]
                     int_labels = [str(y) for y in module_maps[y_axis_key]]
                     original_wg_df = pd.DataFrame(module_maps[main_table_key], index=int_labels, columns=exh_labels)
                     styled_wg_table = style_changed_cells(recommended_wg_df, original_wg_df)
                     tab1, tab2 = st.tabs(["📈 Recommended Table", "📊 Scatter Plot"])
                     with tab1:
-                        display_table_with_copy_button("#### Recommended WGDC Base Table", styled_wg_table, recommended_wg_df)
+                        display_table_with_copy_button("#### Recommended WGDC Base Table", styled_wg_table,
+                                                       recommended_wg_df)
                     with tab2:
-                        if scatter_plot: st.pyplot(scatter_plot)
-                        else: st.info("Scatter plot was not generated.")
+                        if scatter_plot:
+                            st.pyplot(scatter_plot)
+                        else:
+                            st.info("Scatter plot was not generated.")
 
             if mff_results and mff_results.get('status') == 'Success':
                 with st.expander("Multiplicative Fuel Factor (MFF) Tuning Results", expanded=True):
@@ -554,7 +595,9 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                         for warning in mff_results['warnings']: st.warning(f"MFF Analysis Warning: {warning}")
                     recommended_mff_df = mff_results['results_mff']
                     module_maps = all_maps_data['mff']
-                    original_df = pd.DataFrame(module_maps['MFFtable'], index=[str(y) for y in module_maps['MFFtable_Y']], columns=[str(x) for x in module_maps['MFFtable_X']])
+                    original_df = pd.DataFrame(module_maps['MFFtable'],
+                                               index=[str(y) for y in module_maps['MFFtable_Y']],
+                                               columns=[str(x) for x in module_maps['MFFtable_X']])
                     styled_table = style_changed_cells(recommended_mff_df, original_df)
                     display_table_with_copy_button(f"#### Recommended MFF Table", styled_table, recommended_mff_df)
 
@@ -565,11 +608,15 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                     recommended_knk_df, scatter_plot = knk_results['results_knk'], knk_results['scatter_plot_fig']
                     tab1, tab2 = st.tabs(["📈 Recommended Correction Table", "📊 Knock Scatter Plot"])
                     with tab1:
-                        styled_table = recommended_knk_df.style.format("{:.2f}").background_gradient(cmap='viridis', axis=None)
-                        display_table_with_copy_button("#### Recommended Ignition Correction Table", styled_table, recommended_knk_df)
+                        styled_table = recommended_knk_df.style.format("{:.2f}").background_gradient(cmap='viridis',
+                                                                                                     axis=None)
+                        display_table_with_copy_button("#### Recommended Ignition Correction Table", styled_table,
+                                                       recommended_knk_df)
                     with tab2:
-                        if scatter_plot: st.pyplot(scatter_plot)
-                        else: st.info("Scatter plot was not generated (no knock events found).")
+                        if scatter_plot:
+                            st.pyplot(scatter_plot)
+                        else:
+                            st.info("Scatter plot was not generated (no knock events found).")
 
             st.session_state.run_analysis = False
 
@@ -586,8 +633,10 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
             if submit_button:
                 with st.spinner("Sending report..."):
                     success, message = send_to_google_sheets(traceback_str, user_description, user_contact)
-                    if success: st.success("Thank you! Your error report has been sent.")
-                    else: st.error(f"Sorry, the report could not be sent. Reason: {message}")
+                    if success:
+                        st.success("Thank you! Your error report has been sent.")
+                    else:
+                        st.error(f"Sorry, the report could not be sent. Reason: {message}")
         with st.expander("Click to view technical error details"):
             st.code(traceback_str, language=None)
         st.session_state.run_analysis = False
