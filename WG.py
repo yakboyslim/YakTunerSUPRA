@@ -168,20 +168,16 @@ def _calculate_final_recommendations(log_data, blend, old_table, wgxaxis, wgyaxi
                 if np.isnan(current_val) or not (low_ci <= current_val <= high_ci):
                     final_table[j, i] = target_val
 
-    # --- FIX: Quantize the final table to the ECU's actual resolution ---
-    # This ensures the output values are valid for the hardware.
+    # Quantize the final table to the ECU's actual resolution
     return np.round(final_table / WGDC_RESOLUTION) * WGDC_RESOLUTION
 
 
 # --- Main Orchestrator Function ---
-def run_wg_analysis(firmware_id, log_df, wgxaxis, wgyaxis, oldWG, logvars, WGlogic, show_scatter_plot=True):
+def run_wg_analysis(log_df, wgxaxis, wgyaxis, oldWG, logvars, WGlogic, show_scatter_plot=True):
     """
     Main orchestrator for the WG tuning process. A pure computational function.
-    The firmware_id is used for cache invalidation and is not used in the function body.
     """
     print(" -> Initializing WG analysis...")
-    # The 'fudge' factor is a gain on the boost error. A value of 2.5 is quite aggressive.
-    # A value between 0.5 and 2.0 is a more conventional starting point.
     params = {'fudge': 1.5, 'minboost': 0}
 
     print(" -> Preparing and filtering log data...")

@@ -142,10 +142,9 @@ def create_knock_scatter_plot(log, igxaxis, igyaxis):
 
 
 # --- Main Orchestrator Function ---
-def run_knk_analysis(firmware_id, log, igxaxis, igyaxis, max_adv):
+def run_knk_analysis(log, igxaxis, igyaxis, max_adv):
     """
     Main orchestrator for the KNK tuning process. A pure computational function.
-    The firmware_id is used for cache invalidation and is not used in the function body.
     """
     print(" -> Initializing KNK analysis...")
     params = {'max_adv': max_adv, 'confidence': 0.7}

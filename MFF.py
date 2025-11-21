@@ -40,7 +40,6 @@ def _process_and_filter_mff_data(log, logvars):
     measured_error = df['LAMBDA'] / df['LAMBDA_SP']
     target_factor = total_ecu_factor * measured_error
 
-    # Since the MAF module is removed, the MAF correction is assumed to be neutral (0).
     # The new MFF factor is simply the total target factor.
     df.loc[:, 'MFF_FACTOR'] = target_factor
 
@@ -52,7 +51,6 @@ def _create_bins(log, mffxaxis, mffyaxis):
     yedges = [0] + [(mffyaxis[i] + mffyaxis[i + 1]) / 2 for i in range(len(mffyaxis) - 1)] + [np.inf]
 
     log.loc[:, 'X'] = pd.cut(log['RPM'], bins=xedges, labels=False, duplicates='drop')
-    # --- FIX: Use LOAD for the Y-axis ---
     log.loc[:, 'Y'] = pd.cut(log['LOAD'], bins=yedges, labels=False, duplicates='drop')
     return log
 
@@ -61,7 +59,6 @@ def _fit_surface_mff(log_data, mffxaxis, mffyaxis):
     if log_data.empty or len(log_data) < 3:
         return np.ones((len(mffyaxis), len(mffxaxis))) # Default to 1.0
 
-    # --- FIX: Use LOAD for the Y-axis in fitting ---
     points = log_data[['RPM', 'LOAD']].values
     values = log_data['MFF_FACTOR'].values
     grid_x, grid_y = np.meshgrid(mffxaxis, mffyaxis)
@@ -109,10 +106,9 @@ def _calculate_mff_correction(log_data, blend_surface, old_table, mffxaxis, mffy
     return recommended_table
 
 # --- Main Orchestrator Function ---
-def run_mff_analysis(firmware_id, log, mffxaxis, mffyaxis, mfftable, logvars):
+def run_mff_analysis(log, mffxaxis, mffyaxis, mfftable, logvars):
     """
     Main orchestrator for the MFF tuning process. A pure computational function.
-    The firmware_id is used for cache invalidation and is not used in the function body.
     """
     print(" -> Initializing MFF analysis...")
     params = {'confidence': 0.7}
