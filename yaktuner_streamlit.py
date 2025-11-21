@@ -237,7 +237,6 @@ def map_log_variables_streamlit(log_df, varconv_df):
     return None
 
 
-# --- FIX: Use st.cache_data for better caching of data transformations ---
 @st.cache_data(show_spinner=False)
 def load_all_maps_streamlit(bin_content, xdf_content, xdf_name):
     """Loads all ECU maps from file contents. Accepts bytes to be cache-friendly."""
@@ -412,6 +411,14 @@ with firmware_placeholder.container():
     else:
         st.info("**Firmware:**\n`Upload log to detect`")
 
+# --- Pre-fetch XDF content as soon as a firmware is active ---
+xdf_content = None
+firmware = st.session_state.get('firmware_id')
+if firmware:
+    # This spinner provides immediate feedback when the firmware ID changes.
+    # The result is cached, so it's instant on subsequent reruns unless the ID changes.
+    with st.spinner(f"Loading XDF for firmware {firmware}..."):
+        xdf_content = download_xdf(firmware)
 
 # --- 3. Run Button and Analysis Logic ---
 st.divider()
@@ -423,7 +430,6 @@ if st.button("🚀 Run YAKtuner Analysis", type="primary", use_container_width=T
             del st.session_state[key]
 
 if 'run_analysis' in st.session_state and st.session_state.run_analysis:
-    firmware = st.session_state.get('firmware_id')
     if not uploaded_bin_file or not uploaded_log_files or not firmware:
         missing = []
         if not uploaded_bin_file: missing.append("BIN file")
@@ -433,14 +439,14 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
         st.session_state.run_analysis = False
         st.stop()
 
-    try:
-        with st.spinner(f"Loading XDF for firmware {firmware}..."):
-            xdf_content = download_xdf(firmware)
-            if xdf_content is None:
-                st.error(f"Failed to load XDF for firmware {firmware}. Cannot proceed.")
-                st.stop()
-            xdf_name = f"{firmware}.xdf"
+    # Check if the pre-fetched XDF content is valid
+    if xdf_content is None:
+        st.error(f"Failed to load XDF for firmware {firmware}. Cannot proceed.")
+        st.session_state.run_analysis = False
+        st.stop()
 
+    try:
+        xdf_name = f"{firmware}.xdf"
         wg_results, mff_results, knk_results = None, None, None
         all_maps_data = {}
 
