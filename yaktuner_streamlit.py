@@ -375,40 +375,43 @@ uploaded_log_files = st.file_uploader("Upload .csv log files", type=['csv'], acc
 if 'firmware_id' not in st.session_state:
     st.session_state.firmware_id = None
 
-# --- FIX: Restructured firmware logic to prioritize manual selection ---
-# First, determine if manual selection is active
-manual_selection_active = st.sidebar.checkbox("Manually Select Firmware", key="manual_fw_selection")
-
-# Then, perform detection if needed
-detected_fw = None
-if uploaded_log_files and not manual_selection_active:
-    detected_fw = get_firmware_from_log(uploaded_log_files[0])
-    if detected_fw:
-        st.session_state.firmware_id = detected_fw
-
-# Finally, build the UI based on the state
+# --- FIX: Restructured firmware logic to be cleaner and more intuitive ---
 with firmware_placeholder.container():
+    detected_fw = None
+    if uploaded_log_files:
+        detected_fw = get_firmware_from_log(uploaded_log_files[0])
+
+    # The checkbox is now part of the container and only appears when logs are uploaded
+    manual_selection_active = False
+    if uploaded_log_files:
+        manual_selection_active = st.checkbox("Manually Select Firmware", key="manual_fw_selection")
+
     if manual_selection_active:
         with st.spinner("Fetching available firmwares..."):
             available_firmwares = get_available_firmwares_from_github()
         if available_firmwares:
             try:
-                # Default the selectbox to the currently active firmware
+                # Default the selectbox to the currently active firmware if it exists in the list
                 current_index = available_firmwares.index(st.session_state.firmware_id)
             except (ValueError, TypeError):
-                current_index = 0  # Default to the first item if not found
+                current_index = 0  # Default to the first item if not found or None
 
             selected_fw = st.selectbox(
                 "Select Firmware",
                 options=available_firmwares,
                 index=current_index
             )
-            # The selectbox is now the source of truth
+            # The selectbox is now the single source of truth when active
             st.session_state.firmware_id = selected_fw
         else:
             st.warning("Could not fetch firmware list. Manual selection unavailable.")
+    else:
+        # If not in manual mode, rely on auto-detection
+        if detected_fw:
+            st.session_state.firmware_id = detected_fw
+        # If no log is uploaded yet, firmware_id remains None
 
-    # Display the final, active firmware ID
+    # Finally, display the active firmware status
     active_fw = st.session_state.get('firmware_id')
     if active_fw:
         st.info(f"**Active Firmware:**\n`{active_fw}`")
