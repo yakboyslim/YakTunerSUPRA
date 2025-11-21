@@ -237,7 +237,11 @@ def map_log_variables_streamlit(log_df, varconv_df):
     return None
 
 
-@st.cache_data(show_spinner=False)
+# --- FIX: Remove the caching decorator from this function ---
+# This function is the source of the caching bug. By removing the cache,
+# we force it to re-run every time the "Run" button is clicked, ensuring it
+# always uses the latest `xdf_content`. The performance impact is minimal
+# as the expensive operations (network and analysis) remain cached elsewhere.
 def load_all_maps_streamlit(bin_content, xdf_content, xdf_name):
     """Loads all ECU maps from file contents. Accepts bytes to be cache-friendly."""
     st.write("Loading tune data from binary file...")
