@@ -301,6 +301,7 @@ def style_changed_cells(new_df: pd.DataFrame, old_df: pd.DataFrame):
         return new_df.style.format("{:.2f}")
 
 
+# These analysis functions are cached. The global clear on "Run" will manage them.
 @st.cache_data(show_spinner="Running WG analysis...")
 def cached_run_wg_analysis(*args, **kwargs):
     return run_wg_analysis(*args, **kwargs)
@@ -427,13 +428,20 @@ if firmware:
 st.divider()
 
 if st.button("🚀 Run YAKtuner Analysis", type="primary", use_container_width=True):
+    # --- FIX: The Sledgehammer ---
+    # This is the definitive fix that programmatically mimics the manual cache clear.
+    # It ensures that all cached analysis functions are forced to re-run with
+    # the new data, guaranteeing correctness.
+    st.cache_data.clear()
+    # --- END FIX ---
+
     st.session_state.run_analysis = True
     for key in ['mapping_initialized', 'mapping_complete', 'vars_to_map', 'varconv_array', 'log_df_mapped']:
         if key in st.session_state:
             del st.session_state[key]
 
 if 'run_analysis' in st.session_state and st.session_state.run_analysis:
-    firmware = st.session_state.get('firmware_id') # Re-fetch in case it changed
+    firmware = st.session_state.get('firmware_id')  # Re-fetch in case it changed
     if not uploaded_bin_file or not uploaded_log_files or not firmware:
         missing = []
         if not uploaded_bin_file: missing.append("BIN file")
@@ -443,7 +451,9 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
         st.session_state.run_analysis = False
         st.stop()
 
-    # Check if the pre-fetched XDF content is valid
+    # Re-download the XDF content within the run block to be absolutely sure it's fresh.
+    # The download_xdf function is cached, so this is an instant operation if the firmware hasn't changed.
+    xdf_content = download_xdf(firmware)
     if xdf_content is None:
         st.error(f"Failed to load XDF for firmware {firmware}. Cannot proceed.")
         st.session_state.run_analysis = False
@@ -509,9 +519,7 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                                         f"A required map for WG tuning is missing: {[k for k, v in module_maps.items() if v is None]}")
                                 all_maps_data['wg'] = module_maps
 
-                                # --- FIX: Pass firmware ID to analysis function for cache invalidation ---
                                 wg_results = cached_run_wg_analysis(
-                                    firmware_id=firmware,
                                     log_df=mapped_log_df, wgxaxis=module_maps[x_axis_key],
                                     wgyaxis=module_maps[y_axis_key],
                                     oldWG=module_maps[main_table_key], logvars=mapped_log_df.columns.tolist(),
@@ -534,9 +542,7 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                                         f"A required map for MFF tuning is missing: {[k for k, v in module_maps.items() if v is None]}")
                                 all_maps_data['mff'] = module_maps
 
-                                # --- FIX: Pass firmware ID to analysis function for cache invalidation ---
                                 mff_results = cached_run_mff_analysis(
-                                    firmware_id=firmware,
                                     log=log_for_mff, mffxaxis=module_maps['MFFtable_X'],
                                     mffyaxis=module_maps['MFFtable_Y'],
                                     mfftable=module_maps['MFFtable'], logvars=mapped_log_df.columns.tolist()
@@ -558,9 +564,7 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                                         f"A required map for KNK tuning is missing: {[k for k, v in module_maps.items() if v is None]}")
                                 all_maps_data['knk'] = module_maps
 
-                                # --- FIX: Pass firmware ID to analysis function for cache invalidation ---
                                 knk_results = cached_run_knk_analysis(
-                                    firmware_id=firmware,
                                     log=mapped_log_df, igxaxis=module_maps['igxaxis'], igyaxis=module_maps['igyaxis'],
                                     max_adv=max_adv
                                 )
