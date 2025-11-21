@@ -377,7 +377,9 @@ with st.sidebar:
     st.subheader("Firmware")
 
     # Manual Override / Fallback
-    manual_mode = st.checkbox("Manually Select Firmware", key="manual_fw_selection")
+    manual_mode = False
+    if uploaded_log_files:
+        manual_mode = st.checkbox("Manually Select Firmware", key="manual_fw_selection")
 
     active_firmware = None
 
