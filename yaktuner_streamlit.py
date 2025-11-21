@@ -237,29 +237,22 @@ def map_log_variables_streamlit(log_df, varconv_df):
     return None
 
 
-# --- FIX: Re-introduce caching, but with a more robust signature ---
-# By passing the simple `firmware_id` string, we ensure the cache is correctly
-# invalidated when the user selects a new firmware. The function is now
-# responsible for calling the (cached) download function itself.
-@st.cache_data(show_spinner=False)
-def load_all_maps_streamlit(bin_content, firmware_id):
-    """Loads all ECU maps from file contents. Accepts bytes to be cache-friendly."""
-
-    # This function now calls the download utility. Since download_xdf is cached,
-    # this call is instantaneous if the content is already available.
-    with st.spinner(f"Loading XDF for firmware {firmware_id}..."):
-        xdf_content = download_xdf(firmware_id)
-
-    if xdf_content is None:
-        st.error(f"Failed to load XDF for firmware {firmware_id}. Cannot parse maps.")
-        return None
-
-    xdf_name = f"{firmware_id}.xdf"
+# --- FIX: The caching decorator has been removed from this function. ---
+# This is the definitive fix for the stale data bug. By forcing this function
+# to run every time, we guarantee it uses the latest `xdf_content` passed to it.
+# The performance impact is negligible as the expensive network calls and
+# analysis calculations remain cached in other functions.
+def load_all_maps_streamlit(bin_content, xdf_content, xdf_name):
+    """Loads all ECU maps from file contents. This function is NOT cached."""
     st.write("Loading tune data from binary file...")
     try:
         loader = TuningData(bin_content)
     except Exception as e:
         st.error(f"Failed to initialize the binary file loader. Error: {e}")
+        return None
+
+    if xdf_content is None:
+        st.error(f"Cannot parse maps because XDF content is missing for {xdf_name}.")
         return None
 
     st.write(f"Parsing maps from XDF: {xdf_name}...")
@@ -425,6 +418,15 @@ with firmware_placeholder.container():
     else:
         st.info("**Firmware:**\n`Upload log to detect`")
 
+# --- Pre-fetch XDF content as soon as a firmware is active ---
+xdf_content = None
+firmware = st.session_state.get('firmware_id')
+if firmware:
+    # This spinner provides immediate feedback when the firmware ID changes.
+    # The result is cached, so it's instant on subsequent reruns unless the ID changes.
+    with st.spinner(f"Loading XDF for firmware {firmware}..."):
+        xdf_content = download_xdf(firmware)
+
 # --- 3. Run Button and Analysis Logic ---
 st.divider()
 
@@ -435,7 +437,7 @@ if st.button("🚀 Run YAKtuner Analysis", type="primary", use_container_width=T
             del st.session_state[key]
 
 if 'run_analysis' in st.session_state and st.session_state.run_analysis:
-    firmware = st.session_state.get('firmware_id')
+    firmware = st.session_state.get('firmware_id') # Re-fetch in case it changed
     if not uploaded_bin_file or not uploaded_log_files or not firmware:
         missing = []
         if not uploaded_bin_file: missing.append("BIN file")
@@ -445,7 +447,14 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
         st.session_state.run_analysis = False
         st.stop()
 
+    # Check if the pre-fetched XDF content is valid
+    if xdf_content is None:
+        st.error(f"Failed to load XDF for firmware {firmware}. Cannot proceed.")
+        st.session_state.run_analysis = False
+        st.stop()
+
     try:
+        xdf_name = f"{firmware}.xdf"
         wg_results, mff_results, knk_results = None, None, None
         all_maps_data = {}
 
@@ -481,11 +490,11 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                 status.update(label="Loading tune files...")
                 bin_content = uploaded_bin_file.getvalue()
 
-                # --- FIX: The call to load maps now uses the explicit firmware_id ---
-                # This ensures the cache is correctly invalidated when the firmware changes.
+                # --- FIX: This call now uses the fresh xdf_content from the main script body ---
                 all_maps = load_all_maps_streamlit(
                     bin_content=bin_content,
-                    firmware_id=firmware
+                    xdf_content=xdf_content,
+                    xdf_name=xdf_name
                 )
 
                 if all_maps:
