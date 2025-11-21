@@ -237,7 +237,8 @@ def map_log_variables_streamlit(log_df, varconv_df):
     return None
 
 
-@st.cache_resource(show_spinner=False)
+# --- FIX: Use st.cache_data for better caching of data transformations ---
+@st.cache_data(show_spinner=False)
 def load_all_maps_streamlit(bin_content, xdf_content, xdf_name):
     """Loads all ECU maps from file contents. Accepts bytes to be cache-friendly."""
     st.write("Loading tune data from binary file...")
@@ -375,13 +376,11 @@ uploaded_log_files = st.file_uploader("Upload .csv log files", type=['csv'], acc
 if 'firmware_id' not in st.session_state:
     st.session_state.firmware_id = None
 
-# --- FIX: Restructured firmware logic to be cleaner and more intuitive ---
 with firmware_placeholder.container():
     detected_fw = None
     if uploaded_log_files:
         detected_fw = get_firmware_from_log(uploaded_log_files[0])
 
-    # The checkbox is now part of the container and only appears when logs are uploaded
     manual_selection_active = False
     if uploaded_log_files:
         manual_selection_active = st.checkbox("Manually Select Firmware", key="manual_fw_selection")
@@ -391,33 +390,27 @@ with firmware_placeholder.container():
             available_firmwares = get_available_firmwares_from_github()
         if available_firmwares:
             try:
-                # Default the selectbox to the currently active firmware if it exists in the list
                 current_index = available_firmwares.index(st.session_state.firmware_id)
             except (ValueError, TypeError):
-                current_index = 0  # Default to the first item if not found or None
+                current_index = 0
 
             selected_fw = st.selectbox(
                 "Select Firmware",
                 options=available_firmwares,
                 index=current_index
             )
-            # The selectbox is now the single source of truth when active
             st.session_state.firmware_id = selected_fw
         else:
             st.warning("Could not fetch firmware list. Manual selection unavailable.")
     else:
-        # If not in manual mode, rely on auto-detection
         if detected_fw:
             st.session_state.firmware_id = detected_fw
-        # If no log is uploaded yet, firmware_id remains None
 
-    # Finally, display the active firmware status
     active_fw = st.session_state.get('firmware_id')
     if active_fw:
         st.info(f"**Active Firmware:**\n`{active_fw}`")
     else:
         st.info("**Firmware:**\n`Upload log to detect`")
-# --- END FIX ---
 
 
 # --- 3. Run Button and Analysis Logic ---
@@ -425,13 +418,11 @@ st.divider()
 
 if st.button("🚀 Run YAKtuner Analysis", type="primary", use_container_width=True):
     st.session_state.run_analysis = True
-    # Clear previous mapping state on a new run
     for key in ['mapping_initialized', 'mapping_complete', 'vars_to_map', 'varconv_array', 'log_df_mapped']:
         if key in st.session_state:
             del st.session_state[key]
 
 if 'run_analysis' in st.session_state and st.session_state.run_analysis:
-    # --- Input Validation ---
     firmware = st.session_state.get('firmware_id')
     if not uploaded_bin_file or not uploaded_log_files or not firmware:
         missing = []
@@ -443,7 +434,6 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
         st.stop()
 
     try:
-        # --- XDF Content Loading ---
         with st.spinner(f"Loading XDF for firmware {firmware}..."):
             xdf_content = download_xdf(firmware)
             if xdf_content is None:
@@ -451,11 +441,9 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                 st.stop()
             xdf_name = f"{firmware}.xdf"
 
-        # --- Main Analysis Pipeline ---
         wg_results, mff_results, knk_results = None, None, None
         all_maps_data = {}
 
-        # --- Phase 1: Interactive Variable Mapping ---
         log_df = pd.concat(
             (pd.read_csv(f, encoding='latin1', skiprows=LOG_METADATA_ROWS_TO_SKIP).iloc[:, :-1] for f in
              uploaded_log_files),
