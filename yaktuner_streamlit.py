@@ -38,25 +38,50 @@ st.set_page_config(
 
 st.title("☁️ YAKtuner Online")
 
-# --- 1. Sidebar Part 1: Initial Settings ---
-with st.sidebar:
-    # --- FIX: Add the application logo ---
-    st.image("yaktune-website-favicon-black.png", use_container_width='auto')
-    # --- END FIX ---
 
-    st.header("⚙️ Tuner Settings")
+# --- Helper & Core Logic Functions ---
 
-    # --- Module Selection ---
-    run_wg = st.checkbox("Tune Wastegate (WG)", value=True, key="run_wg",
-                         help="Analyzes wastegate duty cycle (WGDC) and boost pressure to recommend adjustments for your base tables. Supports standard and Custom logic.")
-    run_mff = st.checkbox("Tune Mass Fuel Flow (MFF)", value=False, key="run_mff",
-                          help="Adjusts MFF tables based on fuel trims.")
-    run_ign = st.checkbox("Tune Ignition (KNK)", value=False, key="run_ign",
-                          help="Detects knock events across all cylinders and recommends ignition timing corrections for a selected base map.")
+@st.cache_data(ttl=3600)  # Cache for 1 hour
+def get_available_firmwares_from_github():
+    """
+    Fetches the list of available firmware directories from the GitHub repo.
+    Uses a GitHub token from Streamlit secrets for authenticated requests.
+    """
+    headers = {}
+    # Try to get the token from Streamlit's secrets manager
+    if 'GITHUB_TOKEN' in st.secrets:
+        headers['Authorization'] = f"token {st.secrets['GITHUB_TOKEN']}"
+        print("Using GitHub token for API request.")
+    else:
+        print("Warning: GITHUB_TOKEN not found in secrets. Making unauthenticated request.")
 
-    st.divider()
+    try:
+        response = requests.get(GITHUB_REPO_API, headers=headers)
+        response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
+        contents = response.json()
+        # Filter for directories only, as they represent firmwares
+        dirs = [item['name'] for item in contents if item['type'] == 'dir']
+        return sorted(dirs)
+    except requests.exceptions.RequestException as e:
+        st.error(f"Failed to fetch firmware list from GitHub: {e}")
+        return []
 
-# --- Helper Functions ---
+
+@st.cache_data(ttl=86400)  # Cache for 1 day
+def download_xdf(_firmware_id):
+    """
+    Downloads the XDF for the given firmware ID from GitHub and returns its content.
+    Caches the result to avoid re-downloading.
+    """
+    url = f"{GITHUB_RAW_BASE}/{_firmware_id}/{_firmware_id}.xdf"
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        return response.content
+    except requests.exceptions.RequestException as e:
+        st.error(f"Failed to download XDF for {_firmware_id}: {e}")
+        return None
+
 
 def get_firmware_from_log(log_file):
     """
@@ -64,53 +89,20 @@ def get_firmware_from_log(log_file):
     """
     try:
         # Read the first few lines to find the metadata
-        # We decode as latin1 to be safe, similar to the main read
-        content = log_file.read().decode('latin1')
-        # Reset pointer
-        log_file.seek(0)
-
+        content = log_file.read(4096).decode('latin1')  # Read first 4KB
+        log_file.seek(0)  # IMPORTANT: Reset pointer for later use
         match = re.search(r'#Ecu PRGID:\s*([A-Fa-f0-9]+)', content)
         if match:
-             return match.group(1)
-
-        # Fallback: check for Ecu CALID if PRGID isn't there?
-        # The user specifically pointed out PRGID in the screenshot, so we stick to that primarily.
-        match = re.search(r'#Ecu CALID:\s*([A-Fa-f0-9]+)', content)
-        if match:
-             return match.group(1)
-
+            return match.group(1)
         return None
     except Exception as e:
         print(f"Error parsing log for firmware: {e}")
         return None
 
-def download_xdf(firmware_id):
-    """
-    Downloads the XDF for the given firmware ID from GitHub.
-    """
-    url = f"{GITHUB_RAW_BASE}/{firmware_id}/{firmware_id}.xdf"
-    local_path = os.path.join(XDF_SUBFOLDER, f"{firmware_id}.xdf")
-
-    if not os.path.exists(XDF_SUBFOLDER):
-        os.makedirs(XDF_SUBFOLDER)
-
-    try:
-        response = requests.get(url)
-        if response.status_code == 200:
-            with open(local_path, 'wb') as f:
-                f.write(response.content)
-            return True
-        else:
-            st.error(f"Failed to download XDF from {url} (Status: {response.status_code})")
-            return False
-    except Exception as e:
-        st.error(f"Error downloading XDF: {e}")
-        return False
 
 def display_table_with_copy_button(title: str, styled_df, raw_df: pd.DataFrame):
     """
-    Displays a title, a styled DataFrame with its index, and a button to copy
-    the raw data (without index/header) to the clipboard.
+    Displays a title, a styled DataFrame, and a button to copy raw data.
     """
     st.write(title)
     clipboard_text = raw_df.to_csv(sep='\t', index=False, header=False)
@@ -246,7 +238,7 @@ def map_log_variables_streamlit(log_df, varconv_df):
 
 
 @st.cache_resource(show_spinner=False)
-def load_all_maps_streamlit(bin_content, xdf_content, xdf_name, firmware_setting):
+def load_all_maps_streamlit(bin_content, xdf_content, xdf_name):
     """Loads all ECU maps from file contents. Accepts bytes to be cache-friendly."""
     st.write("Loading tune data from binary file...")
     try:
@@ -300,28 +292,6 @@ def style_changed_cells(new_df: pd.DataFrame, old_df: pd.DataFrame):
         decrease_style = 'background-color: #442B2B'
         style_df[new_df_aligned > old_df_aligned] = increase_style
         style_df[new_df_aligned < old_df_aligned] = decrease_style
-        return new_df.style.apply(lambda x: style_df, axis=None)
-    except (ValueError, TypeError):
-        st.warning("Could not apply cell highlighting due to a data type mismatch. Displaying unstyled table.")
-        return new_df.style
-
-
-def style_deviation_cells(new_df: pd.DataFrame, old_df: pd.DataFrame, threshold=0.05):
-    """
-    Compares two DataFrames and returns a Styler object with cells highlighted
-    if their relative deviation exceeds a threshold.
-    """
-    try:
-        new_df_c = new_df.copy().astype(float)
-        old_df_c = old_df.copy().astype(float)
-        with np.errstate(divide='ignore', invalid='ignore'):
-            deviation = np.abs((new_df_c - old_df_c) / old_df_c)
-        style_df = pd.DataFrame('', index=new_df.index, columns=new_df.columns)
-        highlight_style = 'background-color: #442B2B'
-        style_df[
-            (deviation > threshold) |
-            ((old_df_c == 0) & (new_df_c != 0))
-            ] = highlight_style
         return new_df.style.apply(lambda x: style_df, axis=None).format("{:.2f}")
     except (ValueError, TypeError):
         st.warning("Could not apply cell highlighting due to a data type mismatch. Displaying unstyled table.")
@@ -343,132 +313,41 @@ def cached_run_knk_analysis(*args, **kwargs):
     return run_knk_analysis(*args, **kwargs)
 
 
-# --- 2. Main Area for File Uploads ---
-st.subheader("1. Upload Tune & Log Files")
-uploaded_bin_file = st.file_uploader("Upload .bin file", type=['bin', 'all'],
-                                     help="Upload your tune file (e.g., my_tune.bin). This contains all the maps the tool will analyze.")
-uploaded_log_files = st.file_uploader("Upload .csv log files", type=['csv'], accept_multiple_files=True,
-                                      help="Upload one or more data logs from your vehicle. The tool will combine them for analysis.")
+# --- UI LAYOUT ---
 
-# --- Firmware Detection Logic ---
-# Initialize session state
-if 'firmware_id' not in st.session_state:
-    st.session_state.firmware_id = None
-if 'detected_firmware' not in st.session_state:
-    st.session_state.detected_firmware = None
-if 'available_firmwares' not in st.session_state:
-    st.session_state.available_firmwares = []
-if 'xdfs_fetched' not in st.session_state:
-     st.session_state.xdfs_fetched = False
-
-# Attempt detection if logs are uploaded
-detected_fw = None
-if uploaded_log_files:
-    for log_file in uploaded_log_files:
-        detected_fw = get_firmware_from_log(log_file)
-        if detected_fw:
-            st.session_state.detected_firmware = detected_fw
-            break
-else:
-    st.session_state.detected_firmware = None # Reset if files are removed
-
-# --- Sidebar Part 2: Firmware Display & Selection ---
+# --- 1. Sidebar ---
 with st.sidebar:
-    st.subheader("Firmware")
+    st.image("yaktune-website-favicon-black.png", use_column_width='auto')
+    st.header("⚙️ Tuner Settings")
 
-    # Manual Override / Fallback
-    manual_mode = False
-    if uploaded_log_files:
-        manual_mode = st.checkbox("Manually Select Firmware", key="manual_fw_selection")
-
-    active_firmware = None
-
-    if manual_mode:
-        # Fetch available firmwares only if we haven't already
-        if not st.session_state.xdfs_fetched:
-            try:
-                with st.spinner("Fetching firmware list from GitHub..."):
-                    response = requests.get(GITHUB_REPO_API)
-                    if response.status_code == 200:
-                        contents = response.json()
-                        # Filter for directories only
-                        dirs = [item['name'] for item in contents if item['type'] == 'dir']
-                        st.session_state.available_firmwares = sorted(dirs)
-                        st.session_state.xdfs_fetched = True
-                    else:
-                         st.error(f"Failed to fetch firmware list: {response.status_code}")
-            except Exception as e:
-                 st.error(f"Error connecting to GitHub: {e}")
-
-        # Combine local XDFs with GitHub ones (deduplicate)
-        local_xdfs = []
-        if os.path.exists(XDF_SUBFOLDER):
-             local_xdfs = [f.replace('.xdf', '') for f in os.listdir(XDF_SUBFOLDER) if f.endswith('.xdf')]
-
-        all_options = sorted(list(set(local_xdfs + st.session_state.available_firmwares)))
-
-        selected_fw = st.selectbox("Select Firmware", options=all_options, index=0 if all_options else None)
-        active_firmware = selected_fw
-    else:
-        # Automatic Mode
-        if st.session_state.detected_firmware:
-            active_firmware = st.session_state.detected_firmware
-        else:
-            active_firmware = None
-
-    # Update Session State
-    st.session_state.firmware_id = active_firmware
-
-    # Display Info
-    if active_firmware:
-        st.info(f"**Active Firmware:**\n`{active_firmware}`")
-        # Trigger download check immediately if active
-        local_xdf_path = os.path.join(XDF_SUBFOLDER, f"{active_firmware}.xdf")
-        if not os.path.exists(local_xdf_path):
-            with st.spinner(f"Downloading XDF for {active_firmware}..."):
-                    if download_xdf(active_firmware):
-                        st.toast(f"Downloaded XDF for {active_firmware}", icon="✅")
-                    else:
-                        st.error(f"Could not find or download XDF for firmware {active_firmware}.")
-    else:
-        st.info("**Active Firmware:**\n`Waiting for log...`")
-
+    # --- Module Selection ---
+    run_wg = st.checkbox("Tune Wastegate (WG)", value=True, key="run_wg")
+    run_mff = st.checkbox("Tune Mass Fuel Flow (MFF)", value=False, key="run_mff")
+    run_ign = st.checkbox("Tune Ignition (KNK)", value=False, key="run_ign")
     st.divider()
 
-    # --- Sidebar Part 3: Remaining Settings ---
+    # --- Firmware Selection ---
+    st.subheader("Firmware")
+    # This placeholder will be populated by the main script logic
+    firmware_placeholder = st.empty()
+    st.divider()
+
+    # --- Global & Module-Specific Settings ---
     st.subheader("Global Settings")
     oil_temp_unit = st.radio(
-        "Oil Temperature Unit in Log File",
-        ('F', 'C'),
-        index=0,  # Default to Fahrenheit
-        horizontal=True,
-        help="Select the unit for the 'OILTEMP' column in your log file. "
-             "If 'C' is selected, it will be converted to Fahrenheit for analysis."
+        "Oil Temperature Unit in Log File", ('F', 'C'), index=0, horizontal=True
     )
-
     st.divider()
-
-    # --- Module-Specific Settings (Repeated logic or separate?) ---
-    # The logic for displaying these settings was already executed in Part 1,
-    # but the 'subheader' calls were inside 'if run_wg:' blocks.
-    # We need to make sure the layout is correct.
-    # Previously:
-    #   Sidebar -> Settings -> Firmware -> Global -> Module Specific
-    # Now:
-    #   Sidebar Part 1 (Settings) -> Main -> Sidebar Part 2 (Firmware) -> Sidebar Part 3 (Global) -> Sidebar Part 4 (Module Specific)
 
     if run_wg:
         st.subheader("WG Settings")
-        use_swg_logic = st.checkbox("Use Custom WGDC Logic", key="use_swg_logic",
-                                    help="Check this if your tune uses the Custom WGDC logic. This changes which maps are used for the analysis.")
+        use_swg_logic = st.checkbox("Use Custom WGDC Logic", key="use_swg_logic")
 
     if run_ign:
         st.subheader("Ignition Settings")
-        max_adv = st.slider("Max Advance", 0.0, 2.0, 0.75, 0.25, key="max_adv",
-                            help="Set the maximum amount of timing advance to add if clean logs are observed. A lower value is safer.")
+        max_adv = st.slider("Max Advance", 0.0, 2.0, 0.75, 0.25, key="max_adv")
 
     st.divider()
-
     # --- Donation Link ---
     paypal_link = "https://www.paypal.com/donate/?hosted_button_id=MN43RKBR8AT6L"
     st.markdown(f"""
@@ -487,8 +366,38 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
+# --- 2. Main Panel ---
+st.subheader("1. Upload Tune & Log Files")
+uploaded_bin_file = st.file_uploader("Upload .bin file", type=['bin', 'all'])
+uploaded_log_files = st.file_uploader("Upload .csv log files", type=['csv'], accept_multiple_files=True)
 
-# --- 3. Run Button and Logic ---
+# --- Dynamic Firmware Logic ---
+if 'firmware_id' not in st.session_state:
+    st.session_state.firmware_id = None
+
+detected_fw = None
+if uploaded_log_files:
+    # Only need to check the first log file
+    detected_fw = get_firmware_from_log(uploaded_log_files[0])
+
+with firmware_placeholder.container():
+    if detected_fw:
+        st.info(f"**Detected Firmware:**\n`{detected_fw}`")
+        st.session_state.firmware_id = detected_fw
+    else:
+        st.info("**Firmware:**\n`Upload log to detect`")
+
+    if uploaded_log_files:
+        if st.checkbox("Manually Select Firmware", key="manual_fw_selection"):
+            with st.spinner("Fetching available firmwares..."):
+                available_firmwares = get_available_firmwares_from_github()
+            if available_firmwares:
+                selected_fw = st.selectbox("Select Firmware", options=available_firmwares)
+                st.session_state.firmware_id = selected_fw
+            else:
+                st.warning("Could not fetch firmware list. Manual selection unavailable.")
+
+# --- 3. Run Button and Analysis Logic ---
 st.divider()
 
 if st.button("🚀 Run YAKtuner Analysis", type="primary", use_container_width=True):
@@ -499,311 +408,186 @@ if st.button("🚀 Run YAKtuner Analysis", type="primary", use_container_width=T
             del st.session_state[key]
 
 if 'run_analysis' in st.session_state and st.session_state.run_analysis:
-    required_files = {"BIN file": uploaded_bin_file, "Log file(s)": uploaded_log_files}
-    missing_files = [name for name, file in required_files.items() if not file]
-
-    if missing_files:
-        st.error(f"Please upload all required files. Missing: {', '.join(missing_files)}")
+    # --- Input Validation ---
+    firmware = st.session_state.get('firmware_id')
+    if not uploaded_bin_file or not uploaded_log_files or not firmware:
+        missing = []
+        if not uploaded_bin_file: missing.append("BIN file")
+        if not uploaded_log_files: missing.append("Log file(s)")
+        if not firmware: missing.append("Firmware (upload log or select manually)")
+        st.error(f"Please provide all required inputs. Missing: {', '.join(missing)}")
         st.session_state.run_analysis = False
-    else:
-        try:
-            # Use the firmware detected/selected in the sidebar logic
-            firmware = st.session_state.firmware_id
+        st.stop()
 
-            if not firmware:
-                 st.error("No firmware selected or detected. Please upload a log file or select firmware manually.")
-                 st.session_state.run_analysis = False
-                 st.stop()
+    try:
+        # --- XDF Content Loading ---
+        with st.spinner(f"Loading XDF for firmware {firmware}..."):
+            xdf_content = download_xdf(firmware)
+            if xdf_content is None:
+                st.error(f"Failed to load XDF for firmware {firmware}. Cannot proceed.")
+                st.stop()
+            xdf_name = f"{firmware}.xdf"
 
-            # Double check XDF existence (it should have been downloaded in the sidebar logic)
-            local_xdf_path = os.path.join(XDF_SUBFOLDER, f"{firmware}.xdf")
-            if not os.path.exists(local_xdf_path):
-                 # Try one last time, just in case
-                 if not download_xdf(firmware):
-                     st.error(f"Could not find or download XDF for firmware {firmware}. Cannot proceed.")
-                     st.session_state.run_analysis = False
-                     st.stop()
+        # --- Main Analysis Pipeline ---
+        wg_results, mff_results, knk_results = None, None, None
+        all_maps_data = {}
 
-            wg_results, mff_results, knk_results = None, None, None
-            all_maps_data = {}
+        # --- Phase 1: Interactive Variable Mapping ---
+        log_df = pd.concat(
+            (pd.read_csv(f, encoding='latin1', skiprows=LOG_METADATA_ROWS_TO_SKIP).iloc[:, :-1] for f in uploaded_log_files),
+            ignore_index=True
+        )
 
-            # --- Phase 1: Interactive Variable Mapping ---
-            log_df = pd.concat(
-                (
-                    pd.read_csv(f, encoding='latin1', skiprows=LOG_METADATA_ROWS_TO_SKIP).iloc[:, :-1]
-                    for f in uploaded_log_files
-                ),
-                ignore_index=True
-            )
+        if 'OILTEMP' in log_df.columns and oil_temp_unit == 'C':
+            log_df['OILTEMP'] = log_df['OILTEMP'] * 1.8 + 32
+            st.toast("Oil Temperature converted to Fahrenheit.", icon="🌡️")
 
-            if 'OILTEMP' in log_df.columns and oil_temp_unit == 'C':
-                st.write("Converting Oil Temperature from Celsius to Fahrenheit...")
-                log_df['OILTEMP'] = log_df['OILTEMP'] * 1.8 + 32
-                st.toast("Oil Temperature converted to Fahrenheit.", icon="🌡️")
+        if not os.path.exists(default_vars):
+            raise FileNotFoundError(f"Critical file missing: '{default_vars}'")
 
-            if not os.path.exists(default_vars):
-                raise FileNotFoundError(
-                    f"Critical file missing: The default '{default_vars}' could not be found.")
+        logvars_df = pd.read_csv(default_vars, header=None)
+        mapped_log_df = map_log_variables_streamlit(log_df, logvars_df)
 
-            logvars_df = pd.read_csv(default_vars, header=None)
-            mapped_log_df = map_log_variables_streamlit(log_df, logvars_df)
+        if mapped_log_df is not None:
+            with st.status("Starting YAKtuner analysis...", expanded=True) as status:
+                if 'updated_varconv_df' in st.session_state:
+                    with st.expander("View Variable Mapping Results"):
+                        varconv_array = st.session_state.updated_varconv_df.to_numpy()
+                        mapping_summary_df = pd.DataFrame({
+                            "Required Variable": varconv_array[2, 1:] if varconv_array.shape[0] > 2 else varconv_array[1, 1:],
+                            "Matched Log Column": varconv_array[0, 1:],
+                            "Internal App Name": varconv_array[1, 1:]
+                        })
+                        st.dataframe(mapping_summary_df, use_container_width=True)
 
-            if mapped_log_df is not None:
-                # --- Phase 2: Main Analysis Pipeline ---
-                with st.status("Starting YAKtuner analysis...", expanded=True) as status:
-                    if 'updated_varconv_df' in st.session_state:
-                        with st.expander("View Variable Mapping Results"):
-                            varconv_array = st.session_state.updated_varconv_df.to_numpy()
-                            mapping_summary_df = pd.DataFrame({
-                                "Required Variable": varconv_array[2, 1:] if varconv_array.shape[
-                                                                                 0] > 2 else varconv_array[1, 1:],
-                                "Matched Log Column": varconv_array[0, 1:],
-                                "Internal App Name": varconv_array[1, 1:]
-                            })
-                            st.dataframe(mapping_summary_df, use_container_width=True)
+                status.update(label="Loading tune files...")
+                bin_content = uploaded_bin_file.getvalue()
 
-                    status.update(label="Loading tune files...")
-                    bin_content = uploaded_bin_file.getvalue()
-                    xdf_content = None
-                    xdf_name = None
+                all_maps = load_all_maps_streamlit(
+                    bin_content=bin_content, xdf_content=xdf_content, xdf_name=xdf_name
+                )
 
-                    # --- Simplified logic to load the single, hardcoded firmware XDF ---
-                    local_xdf_path = os.path.join(XDF_SUBFOLDER, f"{firmware}.xdf")
-                    if os.path.exists(local_xdf_path):
-                        with open(local_xdf_path, "rb") as f:
-                            xdf_content = f.read()
-                        xdf_name = os.path.basename(local_xdf_path)
-                    else:
-                        raise FileNotFoundError(f"The required XDF for {firmware} was not found at '{local_xdf_path}'.")
+                if all_maps:
+                    log_for_mff = mapped_log_df.copy()
 
-                    all_maps = load_all_maps_streamlit(
-                        bin_content=bin_content, xdf_content=xdf_content, xdf_name=xdf_name, firmware_setting=firmware
-                    )
+                    if run_wg:
+                        with st.status("Running Wastegate (WG) analysis...", expanded=True) as module_status:
+                            try:
+                                x_axis_key, y_axis_key, main_table_key = ('wgdc_cust_X', 'wgdc_cust_Y', 'wgdc_cust') if use_swg_logic else ('wgdc_X', 'wgdc_Y', 'wgdc')
+                                essential_keys = [x_axis_key, y_axis_key, main_table_key]
+                                module_maps = {key: all_maps.get(key) for key in essential_keys}
+                                if any(v is None for v in module_maps.values()):
+                                    raise KeyError(f"A required map for WG tuning is missing: {[k for k, v in module_maps.items() if v is None]}")
+                                all_maps_data['wg'] = module_maps
 
-                    if all_maps:
-                        # Prepare a log copy for MFF
-                        log_for_mff = mapped_log_df.copy()
+                                wg_results = cached_run_wg_analysis(
+                                    log_df=mapped_log_df, wgxaxis=module_maps[x_axis_key], wgyaxis=module_maps[y_axis_key],
+                                    oldWG=module_maps[main_table_key], logvars=mapped_log_df.columns.tolist(), WGlogic=use_swg_logic
+                                )
+                                module_status.update(label="Wastegate (WG) analysis complete.", state="complete", expanded=False)
+                            except Exception as e:
+                                st.error(f"An unexpected error occurred during WG tuning: {e}")
+                                module_status.update(label="Wastegate (WG) analysis failed.", state="error", expanded=True)
 
-                        if run_wg:
-                            with st.status("Running Wastegate (WG) analysis...", expanded=True) as module_status:
-                                try:
-                                    if use_swg_logic:
-                                        x_axis_key = 'wgdc_cust_X'
-                                        y_axis_key = 'wgdc_cust_Y'
-                                        main_table_key = 'wgdc_cust'
-                                    else:
-                                        x_axis_key = 'wgdc_X'
-                                        y_axis_key = 'wgdc_Y'
-                                        main_table_key = 'wgdc'
+                    if run_mff:
+                        with st.status("Running Fuel Factor (MFF) analysis...", expanded=True) as module_status:
+                            try:
+                                keys = ['MFFtable_X', 'MFFtable_Y', 'MFFtable']
+                                module_maps = {key: all_maps.get(key) for key in keys}
+                                if any(v is None for v in module_maps.values()):
+                                    raise KeyError(f"A required map for MFF tuning is missing: {[k for k, v in module_maps.items() if v is None]}")
+                                all_maps_data['mff'] = module_maps
 
-                                    essential_keys = [x_axis_key, y_axis_key, main_table_key]
+                                mff_results = cached_run_mff_analysis(
+                                    log=log_for_mff, mffxaxis=module_maps['MFFtable_X'], mffyaxis=module_maps['MFFtable_Y'],
+                                    mfftable=module_maps['MFFtable'], logvars=mapped_log_df.columns.tolist()
+                                )
+                                module_status.update(label="Fuel Factor (MFF) analysis complete.", state="complete", expanded=False)
+                            except Exception as e:
+                                st.error(f"An unexpected error occurred during MFF tuning: {e}")
+                                module_status.update(label="Fuel Factor (MFF) analysis failed.", state="error", expanded=True)
 
-                                    module_maps = {key: all_maps.get(key) for key in essential_keys if key}
-                                    missing = [key for key, val in module_maps.items() if val is None]
-                                    if missing: raise KeyError(
-                                        f"A required map for WG tuning is missing: {', '.join(missing)}")
-                                    all_maps_data['wg'] = module_maps
+                    if run_ign:
+                        with st.status("Running Ignition (KNK) analysis...", expanded=True) as module_status:
+                            try:
+                                keys = ['igxaxis', 'igyaxis']
+                                module_maps = {key: all_maps.get(key) for key in keys}
+                                if any(v is None for v in module_maps.values()):
+                                    raise KeyError(f"A required map for KNK tuning is missing: {[k for k, v in module_maps.items() if v is None]}")
+                                all_maps_data['knk'] = module_maps
 
-                                    wg_results = cached_run_wg_analysis(
-                                        log_df=mapped_log_df,
-                                        wgxaxis=module_maps[x_axis_key],
-                                        wgyaxis=module_maps[y_axis_key],
-                                        oldWG=module_maps[main_table_key],
-                                        logvars=mapped_log_df.columns.tolist(),
-                                        WGlogic=use_swg_logic
-                                    )
+                                knk_results = cached_run_knk_analysis(
+                                    log=mapped_log_df, igxaxis=module_maps['igxaxis'], igyaxis=module_maps['igyaxis'], max_adv=max_adv
+                                )
+                                module_status.update(label="Ignition (KNK) analysis complete.", state="complete", expanded=False)
+                            except Exception as e:
+                                st.error(f"An unexpected error occurred during KNK tuning: {e}")
+                                module_status.update(label="Ignition (KNK) analysis failed.", state="error", expanded=True)
 
-                                    if wg_results['status'] == 'Success':
-                                        module_status.update(label="Wastegate (WG) analysis complete.",
-                                                             state="complete", expanded=False)
-                                    else:
-                                        st.error("WG analysis failed. Check warnings and console logs for details.")
-                                        module_status.update(label="Wastegate (WG) analysis failed.", state="error",
-                                                             expanded=True)
-                                except Exception as e:
-                                    st.error(f"An unexpected error occurred during WG tuning: {e}")
-                                    module_status.update(label="Wastegate (WG) analysis failed.", state="error",
-                                                         expanded=True)
-
-                        if run_mff:
-                            with st.status("Running Fuel Factor (MFF) analysis...",
-                                           expanded=True) as module_status:
-                                try:
-                                    keys = ['MFFtable_X', 'MFFtable_Y', 'MFFtable']
-                                    module_maps = {key: all_maps.get(key) for key in keys}
-                                    missing = [key for key, val in module_maps.items() if val is None]
-                                    if missing: raise KeyError(
-                                        f"A required map for MFF tuning is missing: {', '.join(missing)}")
-                                    all_maps_data['mff'] = module_maps
-
-                                    mff_results = cached_run_mff_analysis(
-                                        log=log_for_mff,
-                                        mffxaxis=module_maps['MFFtable_X'],
-                                        mffyaxis=module_maps['MFFtable_Y'],
-                                        mfftable=module_maps['MFFtable'],
-                                        logvars=mapped_log_df.columns.tolist()
-                                    )
-
-                                    if mff_results['status'] == 'Success':
-                                        module_status.update(label="Fuel Factor (MFF) analysis complete.",
-                                                             state="complete", expanded=False)
-                                    else:
-                                        st.error("MFF analysis failed. Check warnings for details.")
-                                        module_status.update(label="Fuel Factor (MFF) analysis failed.",
-                                                             state="error", expanded=True)
-                                except Exception as e:
-                                    st.error(f"An unexpected error occurred during MFF tuning: {e}")
-                                    module_status.update(label="Fuel Factor (MFF) analysis failed.",
-                                                         state="error", expanded=True)
-
-                        if run_ign:
-                            with st.status("Running Ignition (KNK) analysis...", expanded=True) as module_status:
-                                try:
-                                    keys = ['igxaxis', 'igyaxis']
-                                    module_maps = {key: all_maps.get(key) for key in keys}
-                                    missing = [key for key, val in module_maps.items() if val is None]
-                                    if missing: raise KeyError(
-                                        f"A required map for KNK tuning is missing: {', '.join(missing)}")
-                                    all_maps_data['knk'] = module_maps
-
-                                    knk_results = cached_run_knk_analysis(
-                                        log=mapped_log_df,
-                                        igxaxis=module_maps['igxaxis'],
-                                        igyaxis=module_maps['igyaxis'],
-                                        max_adv=max_adv
-                                    )
-
-                                    if knk_results['status'] == 'Success':
-                                        module_status.update(label="Ignition (KNK) analysis complete.",
-                                                             state="complete", expanded=False)
-                                    else:
-                                        st.error("KNK analysis failed. Check warnings for details.")
-                                        module_status.update(label="Ignition (KNK) analysis failed.",
-                                                             state="error", expanded=True)
-                                except Exception as e:
-                                    st.error(f"An unexpected error occurred during KNK tuning: {e}")
-                                    module_status.update(label="Ignition (KNK) analysis failed.",
-                                                         state="error", expanded=True)
-
-                    status.update(label="Analysis complete!", state="complete", expanded=False)
-
+                status.update(label="Analysis complete!", state="complete", expanded=False)
                 st.balloons()
 
-                # --- Phase 3: Display All Results ---
-                st.header("📈 Analysis Results")
+            # --- Phase 3: Display All Results ---
+            st.header("📈 Analysis Results")
 
-                if wg_results and wg_results.get('status') == 'Success':
-                    with st.expander("Wastegate (WG) Tuning Results", expanded=True):
-                        if wg_results['warnings']:
-                            for warning in wg_results['warnings']:
-                                st.warning(f"WG Analysis Warning: {warning}")
+            if wg_results and wg_results.get('status') == 'Success':
+                with st.expander("Wastegate (WG) Tuning Results", expanded=True):
+                    if wg_results['warnings']:
+                        for warning in wg_results['warnings']: st.warning(f"WG Analysis Warning: {warning}")
+                    recommended_wg_df, scatter_plot = wg_results['results_wg'], wg_results['scatter_plot_fig']
+                    module_maps = all_maps_data['wg']
+                    x_axis_key, y_axis_key, main_table_key = ('wgdc_cust_X', 'wgdc_cust_Y', 'wgdc_cust') if use_swg_logic else ('wgdc_X', 'wgdc_Y', 'wgdc')
+                    exh_labels = [str(x) for x in module_maps[x_axis_key]]
+                    int_labels = [str(y) for y in module_maps[y_axis_key]]
+                    original_wg_df = pd.DataFrame(module_maps[main_table_key], index=int_labels, columns=exh_labels)
+                    styled_wg_table = style_changed_cells(recommended_wg_df, original_wg_df)
+                    tab1, tab2 = st.tabs(["📈 Recommended Table", "📊 Scatter Plot"])
+                    with tab1:
+                        display_table_with_copy_button("#### Recommended WGDC Base Table", styled_wg_table, recommended_wg_df)
+                    with tab2:
+                        if scatter_plot: st.pyplot(scatter_plot)
+                        else: st.info("Scatter plot was not generated.")
 
-                        recommended_wg_df = wg_results['results_wg']
-                        scatter_plot = wg_results['scatter_plot_fig']
-                        module_maps = all_maps_data['wg']
+            if mff_results and mff_results.get('status') == 'Success':
+                with st.expander("Multiplicative Fuel Factor (MFF) Tuning Results", expanded=True):
+                    if mff_results['warnings']:
+                        for warning in mff_results['warnings']: st.warning(f"MFF Analysis Warning: {warning}")
+                    recommended_mff_df = mff_results['results_mff']
+                    module_maps = all_maps_data['mff']
+                    original_df = pd.DataFrame(module_maps['MFFtable'], index=[str(y) for y in module_maps['MFFtable_Y']], columns=[str(x) for x in module_maps['MFFtable_X']])
+                    styled_table = style_changed_cells(recommended_mff_df, original_df)
+                    display_table_with_copy_button(f"#### Recommended MFF Table", styled_table, recommended_mff_df)
 
-                        if use_swg_logic:
-                            x_axis_key = 'wgdc_cust_X'
-                            y_axis_key = 'wgdc_cust_Y'
-                            main_table_key = 'wgdc_cust'
-                        else:
-                            x_axis_key = 'wgdc_X'
-                            y_axis_key = 'wgdc_Y'
-                            main_table_key = 'wgdc'
-
-                        exh_labels = [str(x) for x in module_maps[x_axis_key]]
-                        int_labels = [str(y) for y in module_maps[y_axis_key]]
-
-                        original_wg_df = pd.DataFrame(module_maps[main_table_key], index=int_labels,
-                                                      columns=exh_labels)
-                        styled_wg_table = style_changed_cells(recommended_wg_df, original_wg_df)
-
-                        tab1, tab2 = st.tabs(["📈 Recommended Table", "📊 Scatter Plot"])
-                        with tab1:
-                            display_table_with_copy_button("#### Recommended WGDC Base Table", styled_wg_table,
-                                                           recommended_wg_df)
-                        with tab2:
-                            if scatter_plot:
-                                st.pyplot(scatter_plot)
-                            else:
-                                st.info("Scatter plot was not generated.")
-
-                if mff_results and mff_results.get('status') == 'Success':
-                    with st.expander("Multiplicative Fuel Factor (MFF) Tuning Results", expanded=True):
-                        if mff_results['warnings']:
-                            for warning in mff_results['warnings']: st.warning(f"MFF Analysis Warning: {warning}")
-
-                        recommended_mff_df = mff_results['results_mff']
-                        module_maps = all_maps_data['mff']
-
-                        original_df = pd.DataFrame(
-                            module_maps['MFFtable'],
-                            index=[str(y) for y in module_maps['MFFtable_Y']],
-                            columns=[str(x) for x in module_maps['MFFtable_X']]
-                        )
-                        styled_table = style_changed_cells(recommended_mff_df, original_df)
-                        display_table_with_copy_button(f"#### Recommended MFF Table", styled_table,
-                                                       recommended_mff_df)
-
-                if knk_results and knk_results.get('status') == 'Success':
-                    with st.expander("Ignition Timing (KNK) Tuning Results", expanded=True):
-                        if knk_results['warnings']:
-                            for warning in knk_results['warnings']:
-                                st.warning(f"KNK Analysis Warning: {warning}")
-
-                        recommended_knk_df, scatter_plot = knk_results['results_knk'], knk_results[
-                            'scatter_plot_fig']
-                        module_maps = all_maps_data['knk']
-                        tab1, tab2 = st.tabs(["📈 Recommended Correction Table", "📊 Knock Scatter Plot"])
-
-                        with tab1:
-                            styled_table = recommended_knk_df.style.format("{:.2f}").background_gradient(
-                                cmap='viridis', axis=None
-                            )
-                            display_table_with_copy_button(
-                                "#### Recommended Ignition Correction Table",
-                                styled_table, recommended_knk_df
-                            )
-
-                        with tab2:
-                            if scatter_plot:
-                                st.pyplot(scatter_plot)
-                            else:
-                                st.info("Scatter plot was not generated (no knock events found).")
-
-                st.session_state.run_analysis = False
-
-        except Exception as e:
-            st.error(f"An unexpected error occurred during the analysis: {e}")
-            st.write("You can help improve YAKtuner by sending this error report to the developer.")
-            traceback_str = traceback.format_exc()
-
-            with st.form(key="error_report_form"):
-                st.write("**An unexpected error occurred.** You can help by sending this report.")
-                user_description = st.text_area(
-                    "Optional: Please describe what you were doing when the error occurred."
-                )
-                user_contact = st.text_input(
-                    "Optional: Email or username for follow-up questions."
-                )
-                st.text_area(
-                    "Technical Error Details (for submission)",
-                    value=traceback_str,
-                    height=200,
-                    disabled=True
-                )
-                submit_button = st.form_submit_button("Submit Error Report")
-
-                if submit_button:
-                    with st.spinner("Sending report..."):
-                        success, message = send_to_google_sheets(traceback_str, user_description, user_contact)
-                        if success:
-                            st.success("Thank you! Your error report has been sent.")
-                        else:
-                            st.error(f"Sorry, the report could not be sent. Reason: {message}")
-                            st.error("Please copy the details below and report it manually.")
-
-            with st.expander("Click to view technical error details"):
-                st.code(traceback_str, language=None)
+            if knk_results and knk_results.get('status') == 'Success':
+                with st.expander("Ignition Timing (KNK) Tuning Results", expanded=True):
+                    if knk_results['warnings']:
+                        for warning in knk_results['warnings']: st.warning(f"KNK Analysis Warning: {warning}")
+                    recommended_knk_df, scatter_plot = knk_results['results_knk'], knk_results['scatter_plot_fig']
+                    tab1, tab2 = st.tabs(["📈 Recommended Correction Table", "📊 Knock Scatter Plot"])
+                    with tab1:
+                        styled_table = recommended_knk_df.style.format("{:.2f}").background_gradient(cmap='viridis', axis=None)
+                        display_table_with_copy_button("#### Recommended Ignition Correction Table", styled_table, recommended_knk_df)
+                    with tab2:
+                        if scatter_plot: st.pyplot(scatter_plot)
+                        else: st.info("Scatter plot was not generated (no knock events found).")
 
             st.session_state.run_analysis = False
+
+    except Exception as e:
+        st.error(f"An unexpected error occurred during the analysis: {e}")
+        st.write("You can help improve YAKtuner by sending this error report to the developer.")
+        traceback_str = traceback.format_exc()
+        with st.form(key="error_report_form"):
+            st.write("**An unexpected error occurred.** You can help by sending this report.")
+            user_description = st.text_area("Optional: Please describe what you were doing when the error occurred.")
+            user_contact = st.text_input("Optional: Email or username for follow-up questions.")
+            st.text_area("Technical Error Details (for submission)", value=traceback_str, height=200, disabled=True)
+            submit_button = st.form_submit_button("Submit Error Report")
+            if submit_button:
+                with st.spinner("Sending report..."):
+                    success, message = send_to_google_sheets(traceback_str, user_description, user_contact)
+                    if success: st.success("Thank you! Your error report has been sent.")
+                    else: st.error(f"Sorry, the report could not be sent. Reason: {message}")
+        with st.expander("Click to view technical error details"):
+            st.code(traceback_str, language=None)
+        st.session_state.run_analysis = False
