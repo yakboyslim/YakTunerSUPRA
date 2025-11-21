@@ -237,13 +237,24 @@ def map_log_variables_streamlit(log_df, varconv_df):
     return None
 
 
-# --- FIX: Remove the caching decorator from this function ---
-# This function is the source of the caching bug. By removing the cache,
-# we force it to re-run every time the "Run" button is clicked, ensuring it
-# always uses the latest `xdf_content`. The performance impact is minimal
-# as the expensive operations (network and analysis) remain cached elsewhere.
-def load_all_maps_streamlit(bin_content, xdf_content, xdf_name):
+# --- FIX: Re-introduce caching, but with a more robust signature ---
+# By passing the simple `firmware_id` string, we ensure the cache is correctly
+# invalidated when the user selects a new firmware. The function is now
+# responsible for calling the (cached) download function itself.
+@st.cache_data(show_spinner=False)
+def load_all_maps_streamlit(bin_content, firmware_id):
     """Loads all ECU maps from file contents. Accepts bytes to be cache-friendly."""
+
+    # This function now calls the download utility. Since download_xdf is cached,
+    # this call is instantaneous if the content is already available.
+    with st.spinner(f"Loading XDF for firmware {firmware_id}..."):
+        xdf_content = download_xdf(firmware_id)
+
+    if xdf_content is None:
+        st.error(f"Failed to load XDF for firmware {firmware_id}. Cannot parse maps.")
+        return None
+
+    xdf_name = f"{firmware_id}.xdf"
     st.write("Loading tune data from binary file...")
     try:
         loader = TuningData(bin_content)
@@ -251,21 +262,20 @@ def load_all_maps_streamlit(bin_content, xdf_content, xdf_name):
         st.error(f"Failed to initialize the binary file loader. Error: {e}")
         return None
 
-    if xdf_content is not None:
-        st.write(f"Parsing maps from XDF: {xdf_name}...")
-        tmp_xdf_path = ""
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".xdf") as tmp_xdf:
-                tmp_xdf.write(xdf_content)
-                tmp_xdf_path = tmp_xdf.name
-            loader.load_from_xdf(tmp_xdf_path, XDF_MAP_LIST_CSV)
-        except Exception as e:
-            st.error(f"Failed to parse XDF file.")
-            st.exception(e)
-            return None
-        finally:
-            if os.path.exists(tmp_xdf_path):
-                os.remove(tmp_xdf_path)
+    st.write(f"Parsing maps from XDF: {xdf_name}...")
+    tmp_xdf_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".xdf") as tmp_xdf:
+            tmp_xdf.write(xdf_content)
+            tmp_xdf_path = tmp_xdf.name
+        loader.load_from_xdf(tmp_xdf_path, XDF_MAP_LIST_CSV)
+    except Exception as e:
+        st.error(f"Failed to parse XDF file.")
+        st.exception(e)
+        return None
+    finally:
+        if os.path.exists(tmp_xdf_path):
+            os.remove(tmp_xdf_path)
 
     all_maps = loader.maps
     if not all_maps:
@@ -415,15 +425,6 @@ with firmware_placeholder.container():
     else:
         st.info("**Firmware:**\n`Upload log to detect`")
 
-# --- Pre-fetch XDF content as soon as a firmware is active ---
-xdf_content = None
-firmware = st.session_state.get('firmware_id')
-if firmware:
-    # This spinner provides immediate feedback when the firmware ID changes.
-    # The result is cached, so it's instant on subsequent reruns unless the ID changes.
-    with st.spinner(f"Loading XDF for firmware {firmware}..."):
-        xdf_content = download_xdf(firmware)
-
 # --- 3. Run Button and Analysis Logic ---
 st.divider()
 
@@ -434,6 +435,7 @@ if st.button("🚀 Run YAKtuner Analysis", type="primary", use_container_width=T
             del st.session_state[key]
 
 if 'run_analysis' in st.session_state and st.session_state.run_analysis:
+    firmware = st.session_state.get('firmware_id')
     if not uploaded_bin_file or not uploaded_log_files or not firmware:
         missing = []
         if not uploaded_bin_file: missing.append("BIN file")
@@ -443,14 +445,7 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
         st.session_state.run_analysis = False
         st.stop()
 
-    # Check if the pre-fetched XDF content is valid
-    if xdf_content is None:
-        st.error(f"Failed to load XDF for firmware {firmware}. Cannot proceed.")
-        st.session_state.run_analysis = False
-        st.stop()
-
     try:
-        xdf_name = f"{firmware}.xdf"
         wg_results, mff_results, knk_results = None, None, None
         all_maps_data = {}
 
@@ -486,8 +481,11 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                 status.update(label="Loading tune files...")
                 bin_content = uploaded_bin_file.getvalue()
 
+                # --- FIX: The call to load maps now uses the explicit firmware_id ---
+                # This ensures the cache is correctly invalidated when the firmware changes.
                 all_maps = load_all_maps_streamlit(
-                    bin_content=bin_content, xdf_content=xdf_content, xdf_name=xdf_name
+                    bin_content=bin_content,
+                    firmware_id=firmware
                 )
 
                 if all_maps:
@@ -497,8 +495,8 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                         with st.status("Running Wastegate (WG) analysis...", expanded=True) as module_status:
                             try:
                                 x_axis_key, y_axis_key, main_table_key = (
-                                'wgdc_cust_X', 'wgdc_cust_Y', 'wgdc_cust') if use_swg_logic else (
-                                'wgdc_X', 'wgdc_Y', 'wgdc')
+                                    'wgdc_cust_X', 'wgdc_cust_Y', 'wgdc_cust') if use_swg_logic else (
+                                    'wgdc_X', 'wgdc_Y', 'wgdc')
                                 essential_keys = [x_axis_key, y_axis_key, main_table_key]
                                 module_maps = {key: all_maps.get(key) for key in essential_keys}
                                 if any(v is None for v in module_maps.values()):
@@ -575,7 +573,7 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                     recommended_wg_df, scatter_plot = wg_results['results_wg'], wg_results['scatter_plot_fig']
                     module_maps = all_maps_data['wg']
                     x_axis_key, y_axis_key, main_table_key = (
-                    'wgdc_cust_X', 'wgdc_cust_Y', 'wgdc_cust') if use_swg_logic else ('wgdc_X', 'wgdc_Y', 'wgdc')
+                        'wgdc_cust_X', 'wgdc_cust_Y', 'wgdc_cust') if use_swg_logic else ('wgdc_X', 'wgdc_Y', 'wgdc')
                     exh_labels = [str(x) for x in module_maps[x_axis_key]]
                     int_labels = [str(y) for y in module_maps[y_axis_key]]
                     original_wg_df = pd.DataFrame(module_maps[main_table_key], index=int_labels, columns=exh_labels)
