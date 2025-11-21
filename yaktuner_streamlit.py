@@ -237,11 +237,7 @@ def map_log_variables_streamlit(log_df, varconv_df):
     return None
 
 
-# --- FIX: The caching decorator has been removed from this function. ---
-# This is the definitive fix for the stale data bug. By forcing this function
-# to run every time, we guarantee it uses the latest `xdf_content` passed to it.
-# The performance impact is negligible as the expensive network calls and
-# analysis calculations remain cached in other functions.
+# This function is NOT cached to ensure it always runs with the latest XDF content.
 def load_all_maps_streamlit(bin_content, xdf_content, xdf_name):
     """Loads all ECU maps from file contents. This function is NOT cached."""
     st.write("Loading tune data from binary file...")
@@ -490,7 +486,7 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                 status.update(label="Loading tune files...")
                 bin_content = uploaded_bin_file.getvalue()
 
-                # --- FIX: This call now uses the fresh xdf_content from the main script body ---
+                # This call now uses the fresh xdf_content from the main script body
                 all_maps = load_all_maps_streamlit(
                     bin_content=bin_content,
                     xdf_content=xdf_content,
@@ -513,7 +509,9 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                                         f"A required map for WG tuning is missing: {[k for k, v in module_maps.items() if v is None]}")
                                 all_maps_data['wg'] = module_maps
 
+                                # --- FIX: Pass firmware ID to analysis function for cache invalidation ---
                                 wg_results = cached_run_wg_analysis(
+                                    firmware_id=firmware,
                                     log_df=mapped_log_df, wgxaxis=module_maps[x_axis_key],
                                     wgyaxis=module_maps[y_axis_key],
                                     oldWG=module_maps[main_table_key], logvars=mapped_log_df.columns.tolist(),
@@ -536,7 +534,9 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                                         f"A required map for MFF tuning is missing: {[k for k, v in module_maps.items() if v is None]}")
                                 all_maps_data['mff'] = module_maps
 
+                                # --- FIX: Pass firmware ID to analysis function for cache invalidation ---
                                 mff_results = cached_run_mff_analysis(
+                                    firmware_id=firmware,
                                     log=log_for_mff, mffxaxis=module_maps['MFFtable_X'],
                                     mffyaxis=module_maps['MFFtable_Y'],
                                     mfftable=module_maps['MFFtable'], logvars=mapped_log_df.columns.tolist()
@@ -558,7 +558,9 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                                         f"A required map for KNK tuning is missing: {[k for k, v in module_maps.items() if v is None]}")
                                 all_maps_data['knk'] = module_maps
 
+                                # --- FIX: Pass firmware ID to analysis function for cache invalidation ---
                                 knk_results = cached_run_knk_analysis(
+                                    firmware_id=firmware,
                                     log=mapped_log_df, igxaxis=module_maps['igxaxis'], igyaxis=module_maps['igyaxis'],
                                     max_adv=max_adv
                                 )
