@@ -175,4 +175,4 @@ def run_knk_analysis(log, igxaxis, igyaxis, max_adv):
         'warnings': warnings,
         'results_knk': result_df,
         'scatter_plot_fig': scatter_fig
-    }
+    }6

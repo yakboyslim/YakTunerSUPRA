@@ -95,7 +95,7 @@ def create_wg_scatter_plot(log_data, wgxaxis, wgyaxis, WGlogic):
         c=log_data['deltaPUT'], marker='o', cmap='RdBu', label='Log Data'
     )
     cbar = fig.colorbar(scatter, ax=ax)
-    cbar.set_label('PUT - PUT SP (kPa)')
+    cbar.set_label('Boost - Boost Target (psi)')
     ax.invert_yaxis()
     if WGlogic:
         ax.set_xlabel('RPM')

@@ -613,7 +613,7 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                                                index=[str(y) for y in module_maps['MFFtable_Y']],
                                                columns=[str(x) for x in module_maps['MFFtable_X']])
                     styled_table = style_changed_cells(recommended_mff_df, original_df)
-                    display_table_with_copy_button(f"#### Recommended MFF Table", styled_table, recommended_mff_df)
+                    display_table_with_copy_button(f"#### Recommended Fuel Scalar Table multiplier", styled_table, recommended_mff_df)
 
             if knk_results and knk_results.get('status') == 'Success':
                 with st.expander("Ignition Timing (KNK) Tuning Results", expanded=True):
