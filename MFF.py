@@ -39,16 +39,33 @@ def _process_and_filter_mff_data(log, logvars):
     if not all(v in df.columns for v in required_vars):
         raise ValueError(f"MFF analysis requires essential log variables: {required_vars}")
 
+    # --- FIX: Average dual-bank sensor data if available ---
+    # Average Lambda sensors
+    if 'LAMBDA2' in df.columns:
+        lambda_to_use = df[['LAMBDA', 'LAMBDA2']].mean(axis=1)
+        warnings.append("Found and averaged LAMBDA and LAMBDA2 for analysis.")
+    else:
+        lambda_to_use = df['LAMBDA']
+
+    # Average Short-Term Fuel Trims
+    if 'STFT2' in df.columns:
+        stft = df[['STFT', 'STFT2']].mean(axis=1)
+        warnings.append("Found and averaged STFT and STFT2 for analysis.")
+    else:
+        stft = df.get('STFT', 0.0)
+    # --- END FIX ---
+
     mff_cor = df.get('MFF_COR', 1.0)
-    stft = df.get('STFT', 0.0)
     ltft = df.get('LTFT', 0.0)
 
     ltft_correction_term = (1 + ltft / 100) if 'LTFT' in logvars else 1.0
-    stft_correction_term = (1 + stft / 100) if 'STFT' in logvars else 1.0
+    # Use the averaged or single stft value
+    stft_correction_term = (1 + stft / 100) if ('STFT' in logvars or 'STFT2' in logvars) else 1.0
 
     # Calculate the total target correction factor needed.
     total_ecu_factor = stft_correction_term * mff_cor * ltft_correction_term
-    measured_error = df['LAMBDA'] / df['LAMBDA_SP']
+    # Use the averaged or single lambda value
+    measured_error = lambda_to_use / df['LAMBDA_SP']
     target_factor = total_ecu_factor * measured_error
 
     # The new MFF factor is simply the total target factor.
