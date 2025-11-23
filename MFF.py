@@ -18,13 +18,24 @@ def _process_and_filter_mff_data(log, logvars):
     """
     warnings = []
     df = log.copy()
+    initial_rows = len(df)
 
-    # --- Pre-filtering ---
+    # --- Pre-filtering with a hardcoded temperature and intelligent warning ---
     if "OILTEMP" in logvars:
         df = df[df['OILTEMP'] > 180].copy()
+        if df.empty and initial_rows > 0:
+            warnings.append(
+                "All log data was filtered out because the oil temperature was below 180°F. "
+                "Please ensure your log contains data from a fully warmed-up engine and that the "
+                "correct temperature unit (F/C) is selected in the sidebar."
+            )
+
+    # If filtering removed all data, we can stop early.
+    if df.empty:
+        return df, warnings
 
     # --- Unified Correction Formula ---
-    required_vars = ['LAMBDA', 'LAMBDA_SP', 'LOAD'] # Ensure LOAD is present
+    required_vars = ['LAMBDA', 'LAMBDA_SP', 'LOAD']  # Ensure LOAD is present
     if not all(v in df.columns for v in required_vars):
         raise ValueError(f"MFF analysis requires essential log variables: {required_vars}")
 
@@ -45,6 +56,7 @@ def _process_and_filter_mff_data(log, logvars):
 
     return df, warnings
 
+
 def _create_bins(log, mffxaxis, mffyaxis):
     """Discretizes log data into bins based on MFF map axes."""
     xedges = [0] + [(mffxaxis[i] + mffxaxis[i + 1]) / 2 for i in range(len(mffxaxis) - 1)] + [np.inf]
@@ -54,10 +66,11 @@ def _create_bins(log, mffxaxis, mffyaxis):
     log.loc[:, 'Y'] = pd.cut(log['LOAD'], bins=yedges, labels=False, duplicates='drop')
     return log
 
+
 def _fit_surface_mff(log_data, mffxaxis, mffyaxis):
     """Fits a 3D surface to the MFF correction data using griddata."""
     if log_data.empty or len(log_data) < 3:
-        return np.ones((len(mffyaxis), len(mffxaxis))) # Default to 1.0
+        return np.ones((len(mffyaxis), len(mffxaxis)))  # Default to 1.0
 
     points = log_data[['RPM', 'LOAD']].values
     values = log_data['MFF_FACTOR'].values
@@ -76,7 +89,9 @@ def _fit_surface_mff(log_data, mffxaxis, mffyaxis):
     clamped_surface = np.clip(filled_surface, 0.92, 1.08)
     return clamped_surface
 
-def _calculate_mff_correction(log_data, blend_surface, old_table, mffxaxis, mffyaxis, confidence, additive_mode=False):
+
+def _calculate_mff_correction(log_data, blend_surface, old_table, mffxaxis, mffyaxis, confidence,
+                              additive_mode=False):
     """
     Applies confidence interval logic to determine the final correction table.
     """
@@ -93,7 +108,8 @@ def _calculate_mff_correction(log_data, blend_surface, old_table, mffxaxis, mffy
                 mean, std_dev = stats.norm.fit(cell_data['MFF_FACTOR'])
                 surface_val = blend_surface[j, i]
                 target_val = (surface_val * interp_factor) + (mean * (1 - interp_factor))
-                low_ci, high_ci = stats.norm.interval(confidence, loc=target_val, scale=std_dev if std_dev > 0 else 1e-9)
+                low_ci, high_ci = stats.norm.interval(confidence, loc=target_val,
+                                                      scale=std_dev if std_dev > 0 else 1e-9)
                 current_val_from_table = old_table[j, i]
                 comparison_val = 1.0 if additive_mode else current_val_from_table
 
@@ -104,6 +120,7 @@ def _calculate_mff_correction(log_data, blend_surface, old_table, mffxaxis, mffy
 
     recommended_table = np.round(new_table * 1024) / 1024
     return recommended_table
+
 
 # --- Main Orchestrator Function ---
 def run_mff_analysis(log, mffxaxis, mffyaxis, mfftable, logvars):

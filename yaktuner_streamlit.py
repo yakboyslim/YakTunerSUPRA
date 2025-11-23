@@ -25,10 +25,9 @@ from error_reporter import send_to_google_sheets
 # --- Constants ---
 default_vars = "variables.csv"
 XDF_MAP_LIST_CSV = 'maps_to_parse.csv'
-XDF_SUBFOLDER = "XDFs"
 LOG_METADATA_ROWS_TO_SKIP = 4
-GITHUB_REPO_API = "https://api.github.com/repos/dmacpro91/BMW-XDFs/contents/B58gen2"
-GITHUB_RAW_BASE = "https://raw.githubusercontent.com/dmacpro91/BMW-XDFs/master/B58gen2"
+GITHUB_TREES_API = "https://api.github.com/repos/dmacpro91/BMW-XDFs/git/trees/master?recursive=1"
+GITHUB_RAW_BASE = "https://raw.githubusercontent.com/dmacpro91/BMW-XDFs/master"
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -44,8 +43,8 @@ st.title("☁️ YAKtuner Online")
 @st.cache_data(ttl=3600)  # Cache for 1 hour
 def get_available_firmwares_from_github():
     """
-    Fetches the list of available firmware directories from the GitHub repo.
-    Uses a GitHub token from Streamlit secrets for authenticated requests.
+    Recursively scans the entire GitHub repo for .xdf files and builds a
+    map of firmware IDs to their full paths.
     """
     headers = {}
     # Try to get the token from Streamlit's secrets manager
@@ -56,30 +55,43 @@ def get_available_firmwares_from_github():
         print("Warning: GITHUB_TOKEN not found in secrets. Making unauthenticated request.")
 
     try:
-        response = requests.get(GITHUB_REPO_API, headers=headers)
-        response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
-        contents = response.json()
-        # Filter for directories only, as they represent firmwares
-        dirs = [item['name'] for item in contents if item['type'] == 'dir']
-        return sorted(dirs)
+        response = requests.get(GITHUB_TREES_API, headers=headers)
+        response.raise_for_status()
+        tree = response.json().get('tree', [])
+
+        firmware_map = {}
+        for item in tree:
+            path = item.get('path')
+            if path and path.endswith('.xdf'):
+                # Firmware ID is the filename without extension
+                firmware_id = os.path.splitext(os.path.basename(path))[0]
+                firmware_map[firmware_id] = path
+
+        if not firmware_map:
+            st.warning("No .xdf files found in the GitHub repository.")
+            return {}
+
+        return firmware_map
     except requests.exceptions.RequestException as e:
         st.error(f"Failed to fetch firmware list from GitHub: {e}")
-        return []
+        return {}
 
 
 @st.cache_data(ttl=86400)  # Cache for 1 day
-def download_xdf(_firmware_id):
+def download_xdf(_xdf_path):
     """
-    Downloads the XDF for the given firmware ID from GitHub and returns its content.
+    Downloads the XDF file from the given full path in the repo.
     Caches the result to avoid re-downloading.
     """
-    url = f"{GITHUB_RAW_BASE}/{_firmware_id}/{_firmware_id}.xdf"
+    if not _xdf_path:
+        return None
+    url = f"{GITHUB_RAW_BASE}/{_xdf_path}"
     try:
         response = requests.get(url)
         response.raise_for_status()
         return response.content
     except requests.exceptions.RequestException as e:
-        st.error(f"Failed to download XDF for {_firmware_id}: {e}")
+        st.error(f"Failed to download XDF from path {_xdf_path}: {e}")
         return None
 
 
@@ -326,7 +338,7 @@ with st.sidebar:
 
     # --- Module Selection ---
     run_wg = st.checkbox("Tune Wastegate (WG)", value=True, key="run_wg")
-    run_mff = st.checkbox("Tune Mass Fuel Flow (MFF)", value=False, key="run_mff")
+    run_mff = st.checkbox("Tune Mass Fuel Flow (MFF)", value=True, key="run_mff")
     run_ign = st.checkbox("Tune Ignition (KNK)", value=False, key="run_ign")
     st.divider()
 
@@ -390,16 +402,20 @@ with firmware_placeholder.container():
 
     if manual_selection_active:
         with st.spinner("Fetching available firmwares..."):
-            available_firmwares = get_available_firmwares_from_github()
-        if available_firmwares:
+            # This now returns a map: {'fw_id': 'path/to/fw.xdf'}
+            available_firmwares_map = get_available_firmwares_from_github()
+        if available_firmwares_map:
+            # We display the keys (firmware IDs) to the user
+            firmware_ids = sorted(available_firmwares_map.keys())
             try:
-                current_index = available_firmwares.index(st.session_state.firmware_id)
+                # Default the selectbox to the currently active firmware
+                current_index = firmware_ids.index(st.session_state.firmware_id)
             except (ValueError, TypeError):
                 current_index = 0
 
             selected_fw = st.selectbox(
                 "Select Firmware",
-                options=available_firmwares,
+                options=firmware_ids,
                 index=current_index
             )
             st.session_state.firmware_id = selected_fw
@@ -415,25 +431,29 @@ with firmware_placeholder.container():
     else:
         st.info("**Firmware:**\n`Upload log to detect`")
 
-# --- Pre-fetch XDF content as soon as a firmware is active ---
+# --- Pre-fetch XDF content and path ---
 xdf_content = None
+xdf_path = None
 firmware = st.session_state.get('firmware_id')
 if firmware:
-    # This spinner provides immediate feedback when the firmware ID changes.
-    # The result is cached, so it's instant on subsequent reruns unless the ID changes.
-    with st.spinner(f"Loading XDF for firmware {firmware}..."):
-        xdf_content = download_xdf(firmware)
+    # We need the map to find the path
+    firmware_map = get_available_firmwares_from_github()
+    xdf_path = firmware_map.get(firmware)
+    if xdf_path:
+        # This spinner provides immediate feedback when the firmware ID changes.
+        # The result is cached, so it's instant on subsequent reruns unless the ID changes.
+        with st.spinner(f"Loading XDF for firmware {firmware}..."):
+            xdf_content = download_xdf(xdf_path)
 
 # --- 3. Run Button and Analysis Logic ---
 st.divider()
 
 if st.button("🚀 Run YAKtuner Analysis", type="primary", use_container_width=True):
-    # --- FIX: The Sledgehammer ---
-    # This is the definitive fix that programmatically mimics the manual cache clear.
-    # It ensures that all cached analysis functions are forced to re-run with
-    # the new data, guaranteeing correctness.
+    # --- The Sledgehammer Fix ---
+    # This programmatically mimics the manual cache clear that you proved works.
+    # It ensures that all cached analysis functions are forced to re-run.
     st.cache_data.clear()
-    # --- END FIX ---
+    # --- End Fix ---
 
     st.session_state.run_analysis = True
     for key in ['mapping_initialized', 'mapping_complete', 'vars_to_map', 'varconv_array', 'log_df_mapped']:
@@ -452,15 +472,18 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
         st.stop()
 
     # Re-download the XDF content within the run block to be absolutely sure it's fresh.
-    # The download_xdf function is cached, so this is an instant operation if the firmware hasn't changed.
-    xdf_content = download_xdf(firmware)
+    # The download_xdf function is cached, so this is an instant operation.
+    firmware_map = get_available_firmwares_from_github()
+    xdf_path = firmware_map.get(firmware)
+    xdf_content = download_xdf(xdf_path)
+
     if xdf_content is None:
         st.error(f"Failed to load XDF for firmware {firmware}. Cannot proceed.")
         st.session_state.run_analysis = False
         st.stop()
 
     try:
-        xdf_name = f"{firmware}.xdf"
+        xdf_name = os.path.basename(xdf_path) if xdf_path else f"{firmware}.xdf"
         wg_results, mff_results, knk_results = None, None, None
         all_maps_data = {}
 
@@ -470,10 +493,6 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
             ignore_index=True
         )
 
-        if 'OILTEMP' in log_df.columns and oil_temp_unit == 'C':
-            log_df['OILTEMP'] = log_df['OILTEMP'] * 1.8 + 32
-            st.toast("Oil Temperature converted to Fahrenheit.", icon="🌡️")
-
         if not os.path.exists(default_vars):
             raise FileNotFoundError(f"Critical file missing: '{default_vars}'")
 
@@ -481,6 +500,13 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
         mapped_log_df = map_log_variables_streamlit(log_df, logvars_df)
 
         if mapped_log_df is not None:
+            # --- FIX: Perform unit conversion AFTER variable mapping ---
+            # This ensures the conversion is applied to the standardized 'OILTEMP' column.
+            if 'OILTEMP' in mapped_log_df.columns and oil_temp_unit == 'C':
+                mapped_log_df['OILTEMP'] = mapped_log_df['OILTEMP'] * 1.8 + 32
+                st.toast("Oil Temperature converted to Fahrenheit.", icon="🌡️")
+            # --- END FIX ---
+
             with st.status("Starting YAKtuner analysis...", expanded=True) as status:
                 if 'updated_varconv_df' in st.session_state:
                     with st.expander("View Variable Mapping Results"):
@@ -603,17 +629,20 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                         else:
                             st.info("Scatter plot was not generated.")
 
-            if mff_results and mff_results.get('status') == 'Success':
+            if mff_results:
                 with st.expander("Multiplicative Fuel Factor (MFF) Tuning Results", expanded=True):
                     if mff_results['warnings']:
                         for warning in mff_results['warnings']: st.warning(f"MFF Analysis Warning: {warning}")
-                    recommended_mff_df = mff_results['results_mff']
-                    module_maps = all_maps_data['mff']
-                    original_df = pd.DataFrame(module_maps['MFFtable'],
-                                               index=[str(y) for y in module_maps['MFFtable_Y']],
-                                               columns=[str(x) for x in module_maps['MFFtable_X']])
-                    styled_table = style_changed_cells(recommended_mff_df, original_df)
-                    display_table_with_copy_button(f"#### Recommended Fuel Scalar Table multiplier", styled_table, recommended_mff_df)
+
+                    if mff_results.get('status') == 'Success':
+                        recommended_mff_df = mff_results['results_mff']
+                        module_maps = all_maps_data['mff']
+                        original_df = pd.DataFrame(module_maps['MFFtable'],
+                                                   index=[str(y) for y in module_maps['MFFtable_Y']],
+                                                   columns=[str(x) for x in module_maps['MFFtable_X']])
+                        styled_table = style_changed_cells(recommended_mff_df, original_df)
+                        display_table_with_copy_button(f"#### Recommended Fuel Scalar Table multiplier", styled_table,
+                                                       recommended_mff_df)
 
             if knk_results and knk_results.get('status') == 'Success':
                 with st.expander("Ignition Timing (KNK) Tuning Results", expanded=True):
