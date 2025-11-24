@@ -135,7 +135,8 @@ def _calculate_mff_correction(log_data, blend_surface, old_table, mffxaxis, mffy
                     change_amount = (target_val - comparison_val) * weight
                     new_table[j, i] = current_val_from_table + change_amount
 
-    recommended_table = np.round(new_table * 1024) / 1024
+    # Use the 16-bit precision factor (1/32768) as requested
+    recommended_table = np.round(new_table * 32768) / 32768
     return recommended_table
 
 
