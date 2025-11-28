@@ -51,7 +51,7 @@ def _process_and_filter_log_data(log_df, params, logvars, WGlogic):
 
     # Filtering Logic for PUT Delta stability
     processed_log['deltaPUT_CHANGE'] = processed_log['deltaPUT'].diff().abs()
-    is_small_delta = processed_log['deltaPUT'].abs() < 1
+    is_small_delta = processed_log['deltaPUT'].abs() < 3
     is_steady_delta = processed_log['deltaPUT_CHANGE'] < 0.5
     final_mask = is_small_delta | is_steady_delta
     processed_log = processed_log[final_mask.fillna(False)]
@@ -115,7 +115,8 @@ def create_wg_scatter_plot(log_data, wgxaxis, wgyaxis, WGlogic):
 
 def _fit_surface(log_data, wgxaxis, wgyaxis):
     """
-    Fits a 3D surface to the provided log data using scipy.interpolate.griddata.
+    Fits a surface to the provided log data, gracefully handling low-dimensional data
+    to prevent Qhull errors.
     """
     if log_data.empty or len(log_data) < 3:
         return np.zeros((len(wgyaxis), len(wgxaxis)))
@@ -123,13 +124,50 @@ def _fit_surface(log_data, wgxaxis, wgyaxis):
     points = log_data[['wg_x_axis_var', 'wg_y_axis_var']].values
     values = log_data['WGNEED'].values
     grid_x, grid_y = np.meshgrid(wgxaxis, wgyaxis)
-    fitted_surface = interpolate.griddata(points, values, (grid_x, grid_y), method='linear')
 
+    # --- FIX: Robustly handle low-dimensional data ---
+    # Check for variation in both dimensions
+    x_variation = np.ptp(points[:, 0]) > 1e-6
+    y_variation = np.ptp(points[:, 1]) > 1e-6
+
+    if x_variation and y_variation:
+        # Standard 3D interpolation
+        try:
+            fitted_surface = interpolate.griddata(points, values, (grid_x, grid_y), method='linear')
+        except Exception:
+            # Fallback to nearest if linear fails for any reason (e.g., all points on a line)
+            fitted_surface = interpolate.griddata(points, values, (grid_x, grid_y), method='nearest')
+    elif x_variation:
+        # Data is flat in Y dimension, use 1D interpolation along X
+        print("Warning: Log data is flat in the Y-dimension. Using 1D interpolation for surface fit.")
+        # Average values for each unique X to create a 1D function
+        unique_x, mean_values = np.unique(points[:, 0], return_inverse=True)
+        avg_values = np.bincount(mean_values, weights=values) / np.bincount(mean_values)
+        interp_values = np.interp(wgxaxis, unique_x, avg_values, left=avg_values[0], right=avg_values[-1])
+        fitted_surface = np.tile(interp_values, (len(wgyaxis), 1))
+    elif y_variation:
+        # Data is flat in X dimension, use 1D interpolation along Y
+        print("Warning: Log data is flat in the X-dimension. Using 1D interpolation for surface fit.")
+        unique_y, mean_values = np.unique(points[:, 1], return_inverse=True)
+        avg_values = np.bincount(mean_values, weights=values) / np.bincount(mean_values)
+        interp_values = np.interp(wgyaxis, unique_y, avg_values, left=avg_values[0], right=avg_values[-1])
+        fitted_surface = np.tile(interp_values, (len(wgxaxis), 1)).T
+    else:
+        # No variation in either dimension, just use the mean value everywhere
+        print("Warning: Log data has no variation in X or Y dimensions. Using mean value for surface.")
+        mean_value = np.mean(values)
+        fitted_surface = np.full((len(wgyaxis), len(wgxaxis)), mean_value)
+    # --- END FIX ---
+
+    # Fill any remaining NaNs from the griddata process
     nan_mask = np.isnan(fitted_surface)
     if np.any(nan_mask):
+        # Use nearest neighbor to fill in the gaps, which is robust
         nearest_fill = interpolate.griddata(points, values, (grid_x[nan_mask], grid_y[nan_mask]), method='nearest')
-        fitted_surface[nan_mask] = nearest_fill
+        if nearest_fill is not None and not np.all(np.isnan(nearest_fill)):
+             fitted_surface[nan_mask] = nearest_fill
 
+    # Final check for any all-NaN results
     if np.all(np.isnan(fitted_surface)):
         return np.zeros((len(wgyaxis), len(wgxaxis)))
 

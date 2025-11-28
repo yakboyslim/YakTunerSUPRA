@@ -29,12 +29,6 @@ LOG_METADATA_ROWS_TO_SKIP = 4
 GITHUB_TREES_API = "https://api.github.com/repos/dmacpro91/BMW-XDFs/git/trees/master?recursive=1"
 GITHUB_RAW_BASE = "https://raw.githubusercontent.com/dmacpro91/BMW-XDFs/master"
 
-# Tuning Precision Constants
-PRECISION_WG_OEM = 0.001525879
-PRECISION_WG_CUSTOM = 1 / 655.36
-PRECISION_MFF = 1 / 32768
-PRECISION_KNK = 0.5
-
 # --- Page Configuration ---
 st.set_page_config(
     page_title="YAKtuner Online",
@@ -230,8 +224,18 @@ def map_log_variables_streamlit(log_df, varconv_df):
             f"Please select the corresponding column from your log file. The last known name was `{varconv[0, current_var_index]}`.")
 
         with st.form(key=f"mapping_form_{current_var_index}"):
-            options = ['[Not Logged]'] + log_df.columns.tolist()
+            # --- FIX: Only show un-mapped columns as options ---
+            # Get all canonical names defined in the variables file
+            all_canonical_names = set(st.session_state.varconv_array[1, 1:])
+            # Get all columns currently in the dataframe being modified
+            all_current_columns = set(st.session_state.log_df_mapped.columns)
+            # The available columns are those that are not already a canonical name
+            available_columns = sorted([col for col in all_current_columns if col not in all_canonical_names])
+
+            options = ['[Not Logged]'] + available_columns
             selected_header = st.selectbox("Select Log File Column:", options=options)
+            # --- END FIX ---
+
             submitted = st.form_submit_button("Confirm Mapping")
 
             if submitted:
@@ -302,40 +306,18 @@ def load_all_maps_streamlit(bin_content, xdf_content, xdf_name):
     return all_maps
 
 
-def style_changed_cells(new_df: pd.DataFrame, old_df: pd.DataFrame, precision: float):
-    """
-    Compares two DataFrames and returns a Styler object with changed cells highlighted.
-    Values are quantized by 'precision' before comparison to avoid false positives.
-    """
+def style_changed_cells(new_df: pd.DataFrame, old_df: pd.DataFrame):
+    """Compares two DataFrames and returns a Styler object with changed cells highlighted."""
     try:
         new_df_c = new_df.copy().astype(float)
         old_df_c = old_df.copy().astype(float)
-
-        # Quantize values
-        # We round to the nearest 'precision' step for comparison
-        new_quant = np.round(new_df_c / precision)
-        old_quant = np.round(old_df_c / precision)
-
-        old_quant_aligned, new_quant_aligned = old_quant.align(new_quant, join='outer', axis=None)
-
+        old_df_aligned, new_df_aligned = old_df_c.align(new_df_c, join='outer', axis=None)
         style_df = pd.DataFrame('', index=new_df.index, columns=new_df.columns)
         increase_style = 'background-color: #2B442B'
         decrease_style = 'background-color: #442B2B'
-        # Default/Black is implicit by empty string (Streamlit default theme)
-
-        # Compare integer steps to avoid float issues
-        style_df[new_quant_aligned > old_quant_aligned] = increase_style
-        style_df[new_quant_aligned < old_quant_aligned] = decrease_style
-
-        # Determine format string based on precision
-        # If precision is small (e.g., MFF or WG), stick to 2 decimal places or more if needed.
-        # If precision is large (e.g., 0.5 for KNK), use 1 decimal place.
-        if precision >= 0.1:
-            fmt = "{:.1f}"
-        else:
-            fmt = "{:.2f}"
-
-        return new_df.style.apply(lambda x: style_df, axis=None).format(fmt)
+        style_df[new_df_aligned > old_df_aligned] = increase_style
+        style_df[new_df_aligned < old_df_aligned] = decrease_style
+        return new_df.style.apply(lambda x: style_df, axis=None).format("{:.2f}")
     except (ValueError, TypeError):
         st.warning("Could not apply cell highlighting due to a data type mismatch. Displaying unstyled table.")
         return new_df.style.format("{:.2f}")
@@ -646,10 +628,7 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                     exh_labels = [str(x) for x in module_maps[x_axis_key]]
                     int_labels = [str(y) for y in module_maps[y_axis_key]]
                     original_wg_df = pd.DataFrame(module_maps[main_table_key], index=int_labels, columns=exh_labels)
-
-                    wg_precision = PRECISION_WG_CUSTOM if use_swg_logic else PRECISION_WG_OEM
-                    styled_wg_table = style_changed_cells(recommended_wg_df, original_wg_df, precision=wg_precision)
-
+                    styled_wg_table = style_changed_cells(recommended_wg_df, original_wg_df)
                     tab1, tab2 = st.tabs(["📈 Recommended Table", "📊 Scatter Plot"])
                     with tab1:
                         display_table_with_copy_button("#### Recommended WGDC Base Table", styled_wg_table,
@@ -671,7 +650,7 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                         original_df = pd.DataFrame(module_maps['MFFtable'],
                                                    index=[str(y) for y in module_maps['MFFtable_Y']],
                                                    columns=[str(x) for x in module_maps['MFFtable_X']])
-                        styled_table = style_changed_cells(recommended_mff_df, original_df, precision=PRECISION_MFF)
+                        styled_table = style_changed_cells(recommended_mff_df, original_df)
                         display_table_with_copy_button(f"#### Recommended Fuel Scalar Table multiplier", styled_table,
                                                        recommended_mff_df)
 
@@ -680,17 +659,10 @@ if 'run_analysis' in st.session_state and st.session_state.run_analysis:
                     if knk_results['warnings']:
                         for warning in knk_results['warnings']: st.warning(f"KNK Analysis Warning: {warning}")
                     recommended_knk_df, scatter_plot = knk_results['results_knk'], knk_results['scatter_plot_fig']
-
-                    # Round KNK results to 0.5 precision before display
-                    recommended_knk_df = (recommended_knk_df / PRECISION_KNK).round() * PRECISION_KNK
-
-                    # Create an "original" zero-table for comparison, since KNK doesn't have a "base" map loaded like WG/MFF
-                    # The correction is always relative to 0 (no correction)
-                    original_knk_df = pd.DataFrame(0.0, index=recommended_knk_df.index, columns=recommended_knk_df.columns)
-
                     tab1, tab2 = st.tabs(["📈 Recommended Correction Table", "📊 Knock Scatter Plot"])
                     with tab1:
-                        styled_table = style_changed_cells(recommended_knk_df, original_knk_df, precision=PRECISION_KNK)
+                        styled_table = recommended_knk_df.style.format("{:.2f}").background_gradient(cmap='viridis',
+                                                                                                     axis=None)
                         display_table_with_copy_button("#### Recommended Ignition Correction Table", styled_table,
                                                        recommended_knk_df)
                     with tab2:
